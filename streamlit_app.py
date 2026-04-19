@@ -1058,7 +1058,7 @@ def page3_results() -> None:
             use_container_width=True,
         )
     with cc3:
-        if st.button("Bilgi bankasına kaydet", use_container_width=True):
+        if st.button("Oturuma Kaydet", use_container_width=True):
             for a in result.get("analyses", []):
                 if "error" in a:
                     continue
