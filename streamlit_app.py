@@ -36,9 +36,14 @@ def get_llm_client():
         from openai import OpenAI
     except Exception:
         return None, None
-    api_key = st.secrets.get("LLM_API_KEY", "") if hasattr(st, "secrets") else ""
-    base_url = st.secrets.get("LLM_BASE_URL", "") if hasattr(st, "secrets") else ""
-    model = st.secrets.get("LLM_MODEL", "") if hasattr(st, "secrets") else ""
+    try:
+        api_key = st.secrets.get("LLM_API_KEY", "") if hasattr(st, "secrets") else ""
+        base_url = st.secrets.get("LLM_BASE_URL", "") if hasattr(st, "secrets") else ""
+        model = st.secrets.get("LLM_MODEL", "") if hasattr(st, "secrets") else ""
+    except Exception:
+        api_key = ""
+        base_url = ""
+        model = ""
     if not api_key:
         return None, None
     try:
@@ -48,36 +53,45 @@ def get_llm_client():
         return None, None
 
 
+def llm_explain(summary_text: str) -> Optional[str]:
+    client, model = get_llm_client()
+    if client is None or not model:
+        return None
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Sen bir A/B test analistisin. Verilen teknik özet üzerinden "
+                        "yöneticiler için Türkçe, sade ve aksiyon odaklı bir açıklama üret. "
+                        "Çıktın: kısa özet, sonuç yorumu, önerilen aksiyon ve riskler. "
+                        "Teknik jargonu minimuma indir; emoji kullanma."
+                    ),
+                },
+                {"role": "user", "content": summary_text},
+            ],
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        return f"LLM açıklaması üretilemedi: {exc}"
+
+
 _DEFAULTS = {
-    "df": None,
-    "file_name": None,
-    "variant_col": None,
-    "metric_col": None,
-    "metric_type": "Binary",
-    "timestamp_col": None,
-    "segment_col": None,
-    "pre_metric_col": None,
-    "control_label": None,
-    "variant_labels": [],
-    "traffic_split": None,
+    "step": 1,
     "hypothesis": "",
+    "metric_kind": "Dönüşüm / Tıklama / Evet-Hayır",
     "alpha": 0.05,
     "power": 0.80,
-    "mde": 0.02,
-    "baseline_rate": 0.10,
-    "baseline_mean": 100.0,
-    "baseline_std": 30.0,
-    "analysis_result": None,
-    "validation_report": None,
-    "bayes_result": None,
-    "sequential_result": None,
-    "cuped_result": None,
-    "segment_result": None,
-    "guardrails": [],
-    "guardrail_result": None,
-    "decision_result": None,
+    "mde_hint": 0.02,
+    "df": None,
+    "file_name": None,
+    "mapping": None,
+    "auto_mapping": None,
+    "full_result": None,
     "history": [],
-    "anomaly_result": None,
 }
 for _key, _value in _DEFAULTS.items():
     st.session_state.setdefault(_key, _value)
@@ -179,32 +193,18 @@ def run_z_test(c_success: int, c_n: int, v_success: int, v_n: int, alpha: float)
     }
 
 
-def run_chi_square(c_success: int, c_n: int, v_success: int, v_n: int) -> Dict:
-    observed = np.array(
-        [[c_success, c_n - c_success], [v_success, v_n - v_success]]
-    )
-    chi2, p, dof, _ = stats.chi2_contingency(observed)
-    return {"chi2": float(chi2), "p_value": float(p), "dof": int(dof)}
-
-
-def run_t_test(c: np.ndarray, v: np.ndarray, alpha: float, welch: bool = True) -> Dict:
+def run_t_test(c: np.ndarray, v: np.ndarray, alpha: float) -> Dict:
     if len(c) < 2 or len(v) < 2:
         return {"error": "Her grupta en az 2 gözlem olmalı."}
-    t_stat, p_value = stats.ttest_ind(v, c, equal_var=not welch)
+    t_stat, p_value = stats.ttest_ind(v, c, equal_var=False)
     mean_c = float(np.mean(c))
     mean_v = float(np.mean(v))
     sd_c = float(np.std(c, ddof=1))
     sd_v = float(np.std(v, ddof=1))
     n_c, n_v = len(c), len(v)
-    if welch:
-        se_diff = math.sqrt(sd_c ** 2 / n_c + sd_v ** 2 / n_v)
-        df = (sd_c ** 2 / n_c + sd_v ** 2 / n_v) ** 2 / (
-            (sd_c ** 2 / n_c) ** 2 / (n_c - 1) + (sd_v ** 2 / n_v) ** 2 / (n_v - 1)
-        )
-    else:
-        sp2 = ((n_c - 1) * sd_c ** 2 + (n_v - 1) * sd_v ** 2) / (n_c + n_v - 2)
-        se_diff = math.sqrt(sp2 * (1 / n_c + 1 / n_v))
-        df = n_c + n_v - 2
+    se_diff = math.sqrt(sd_c ** 2 / n_c + sd_v ** 2 / n_v)
+    denom = (sd_c ** 2 / n_c) ** 2 / (n_c - 1) + (sd_v ** 2 / n_v) ** 2 / (n_v - 1)
+    df = (sd_c ** 2 / n_c + sd_v ** 2 / n_v) ** 2 / denom if denom > 0 else n_c + n_v - 2
     t_crit = stats.t.ppf(1 - alpha / 2, df)
     diff = mean_v - mean_c
     ci_low = diff - t_crit * se_diff
@@ -213,7 +213,7 @@ def run_t_test(c: np.ndarray, v: np.ndarray, alpha: float, welch: bool = True) -
     cohen_d = diff / pooled_sd if pooled_sd > 0 else np.nan
     uplift_rel = diff / mean_c if mean_c != 0 else np.nan
     return {
-        "method": "Welch's t-test" if welch else "Student's t-test",
+        "method": "Welch's t-test",
         "mean_control": mean_c,
         "mean_variant": mean_v,
         "sd_control": sd_c,
@@ -233,55 +233,32 @@ def run_t_test(c: np.ndarray, v: np.ndarray, alpha: float, welch: bool = True) -
     }
 
 
-def run_mann_whitney(c: np.ndarray, v: np.ndarray) -> Dict:
-    if len(c) < 2 or len(v) < 2:
-        return {"error": "Her grupta en az 2 gözlem olmalı."}
-    u, p = stats.mannwhitneyu(v, c, alternative="two-sided")
-    return {"method": "Mann-Whitney U", "u": float(u), "p_value": float(p)}
-
-
-def bayesian_binary(c_success: int, c_n: int, v_success: int, v_n: int, draws: int = 50000) -> Dict:
+def bayesian_binary(c_success: int, c_n: int, v_success: int, v_n: int, draws: int = 30000) -> Dict:
     rng = np.random.default_rng(42)
-    alpha_prior, beta_prior = 1.0, 1.0
-    post_c = rng.beta(alpha_prior + c_success, beta_prior + c_n - c_success, size=draws)
-    post_v = rng.beta(alpha_prior + v_success, beta_prior + v_n - v_success, size=draws)
-    prob_v_better = float(np.mean(post_v > post_c))
+    post_c = rng.beta(1 + c_success, 1 + c_n - c_success, size=draws)
+    post_v = rng.beta(1 + v_success, 1 + v_n - v_success, size=draws)
     diff = post_v - post_c
-    expected_lift = float(np.mean(diff))
-    ci = np.percentile(diff, [2.5, 97.5])
-    expected_loss_v = float(np.mean(np.maximum(post_c - post_v, 0)))
     return {
-        "method": "Bayesian Beta-Binomial",
-        "prob_variant_better": prob_v_better,
-        "expected_lift_abs": expected_lift,
-        "ci_low": float(ci[0]),
-        "ci_high": float(ci[1]),
-        "expected_loss_variant": expected_loss_v,
+        "prob_variant_better": float(np.mean(post_v > post_c)),
+        "expected_lift_abs": float(np.mean(diff)),
+        "ci_low": float(np.percentile(diff, 2.5)),
+        "ci_high": float(np.percentile(diff, 97.5)),
+        "expected_loss_variant": float(np.mean(np.maximum(post_c - post_v, 0))),
     }
 
 
 def bayesian_continuous(c: np.ndarray, v: np.ndarray, draws: int = 20000) -> Dict:
+    if len(c) < 2 or len(v) < 2:
+        return {"prob_variant_better": float("nan"), "expected_lift_abs": float("nan"), "ci_low": float("nan"), "ci_high": float("nan"), "expected_loss_variant": float("nan")}
     rng = np.random.default_rng(42)
-    n_c, n_v = len(c), len(v)
-    if n_c < 2 or n_v < 2:
-        return {"error": "Her grupta en az 2 gözlem olmalı."}
-    mean_c = float(np.mean(c))
-    mean_v = float(np.mean(v))
-    sd_c = float(np.std(c, ddof=1))
-    sd_v = float(np.std(v, ddof=1))
-    se_c = sd_c / math.sqrt(n_c)
-    se_v = sd_v / math.sqrt(n_v)
-    post_c = rng.normal(mean_c, se_c, size=draws)
-    post_v = rng.normal(mean_v, se_v, size=draws)
-    prob = float(np.mean(post_v > post_c))
+    post_c = rng.normal(np.mean(c), np.std(c, ddof=1) / math.sqrt(len(c)), size=draws)
+    post_v = rng.normal(np.mean(v), np.std(v, ddof=1) / math.sqrt(len(v)), size=draws)
     diff = post_v - post_c
-    ci = np.percentile(diff, [2.5, 97.5])
     return {
-        "method": "Bayesian Normal approximation",
-        "prob_variant_better": prob,
+        "prob_variant_better": float(np.mean(post_v > post_c)),
         "expected_lift_abs": float(np.mean(diff)),
-        "ci_low": float(ci[0]),
-        "ci_high": float(ci[1]),
+        "ci_low": float(np.percentile(diff, 2.5)),
+        "ci_high": float(np.percentile(diff, 97.5)),
         "expected_loss_variant": float(np.mean(np.maximum(post_c - post_v, 0))),
     }
 
@@ -302,30 +279,24 @@ def srm_check(observed_counts: Dict[str, int], expected_split: Dict[str, float])
         "p_value": p_value,
         "srm_detected": p_value < 0.001,
         "observed": dict(zip(keys, obs.astype(int).tolist())),
-        "expected": dict(zip(keys, exp.tolist())),
     }
 
 
-def detect_outliers_iqr(x: np.ndarray) -> Tuple[int, Tuple[float, float]]:
+def detect_outliers_iqr(x: np.ndarray) -> int:
     if len(x) < 4:
-        return 0, (float("nan"), float("nan"))
+        return 0
     q1, q3 = np.percentile(x, [25, 75])
     iqr = q3 - q1
     low = q1 - 1.5 * iqr
     high = q3 + 1.5 * iqr
-    return int(np.sum((x < low) | (x > high))), (float(low), float(high))
+    return int(np.sum((x < low) | (x > high)))
 
 
-def cuped_adjust(
-    pre: np.ndarray, post: np.ndarray, variant: np.ndarray, control_label: str
-) -> Dict:
-    mask_c = variant == control_label
-    if mask_c.sum() < 2 or (~mask_c).sum() < 2:
+def cuped_adjust(pre: np.ndarray, post: np.ndarray) -> Dict:
+    if len(pre) < 10 or np.var(pre, ddof=1) == 0:
         return {"error": "CUPED için yeterli veri yok."}
     mu_pre = float(np.mean(pre))
     var_pre = float(np.var(pre, ddof=1))
-    if var_pre == 0:
-        return {"error": "Pre-period varyansı sıfır."}
     cov = float(np.cov(pre, post, ddof=1)[0, 1])
     theta = cov / var_pre
     adjusted = post - theta * (pre - mu_pre)
@@ -337,177 +308,356 @@ def cuped_adjust(
     }
 
 
-def sequential_obf(
-    c_success: int, c_n: int, v_success: int, v_n: int, looks_total: int, look_idx: int, alpha: float
-) -> Dict:
-    if look_idx < 1 or look_idx > looks_total:
-        return {"error": "Look index geçersiz."}
-    t = look_idx / looks_total
-    if t == 0:
-        return {"error": "t=0"}
-    alpha_t = 2 * (1 - stats.norm.cdf(stats.norm.ppf(1 - alpha / 2) / math.sqrt(t)))
-    z = run_z_test(c_success, c_n, v_success, v_n, alpha)
-    if "error" in z:
-        return z
-    reject = abs(z["z"]) > stats.norm.ppf(1 - alpha_t / 2)
-    return {
-        "t_fraction": t,
-        "alpha_boundary": float(alpha_t),
-        "z_stat": z["z"],
-        "p_value": z["p_value"],
-        "reject_h0": bool(reject),
-        "recommendation": "Early stop: anlamlı" if reject else "Devam et",
-    }
-
-
-def multiple_testing_correction(p_values: List[float], method: str = "bonferroni") -> Dict:
+def multiple_testing_correction(p_values: List[float], method: str = "fdr_bh") -> List[float]:
     p_arr = np.array(p_values, dtype=float)
     m = len(p_arr)
     if m == 0:
-        return {"error": "p-değer yok."}
+        return []
     if method == "bonferroni":
-        adj = np.minimum(p_arr * m, 1.0)
-    elif method == "fdr_bh":
-        order = np.argsort(p_arr)
-        ranked = p_arr[order]
-        adj_ranked = ranked * m / (np.arange(1, m + 1))
-        adj_ranked = np.minimum.accumulate(adj_ranked[::-1])[::-1]
-        adj = np.empty_like(adj_ranked)
-        adj[order] = np.minimum(adj_ranked, 1.0)
-    else:
-        adj = p_arr
-    return {"method": method, "adjusted": adj.tolist()}
-
-
-def what_if_binary(baseline: float, uplift: float, n_per_arm: int, alpha: float) -> Dict:
-    new_rate = baseline + uplift
-    if new_rate <= 0 or new_rate >= 1:
-        return {"error": "Yeni oran 0-1 aralığı dışında."}
-    c_success = int(round(baseline * n_per_arm))
-    v_success = int(round(new_rate * n_per_arm))
-    return run_z_test(c_success, n_per_arm, v_success, n_per_arm, alpha)
+        return np.minimum(p_arr * m, 1.0).tolist()
+    order = np.argsort(p_arr)
+    ranked = p_arr[order]
+    adj_ranked = ranked * m / (np.arange(1, m + 1))
+    adj_ranked = np.minimum.accumulate(adj_ranked[::-1])[::-1]
+    adj = np.empty_like(adj_ranked)
+    adj[order] = np.minimum(adj_ranked, 1.0)
+    return adj.tolist()
 
 
 def decision_engine(
     p_value: Optional[float],
     uplift_abs: Optional[float],
-    uplift_rel: Optional[float],
     alpha: float,
     guardrail_violated: bool,
     n_required: int,
     n_actual: int,
-    bayes_prob: Optional[float] = None,
 ) -> Dict:
     reasons: List[str] = []
     if n_actual < n_required * 0.7:
         reasons.append(
-            f"Örneklem yetersiz (mevcut {n_actual:,}, gereken {n_required:,})."
+            f"Örneklem henüz yeterli değil (mevcut {n_actual:,}, hedef ≈ {n_required:,})."
         )
-        return {"decision": "Continue Test", "icon": "Continue", "reasons": reasons}
+        return {"decision": "Continue Test", "reasons": reasons}
     if guardrail_violated:
-        reasons.append("Guardrail metriklerinde olumsuz sapma tespit edildi.")
-        return {"decision": "Do Not Launch", "icon": "Do Not Launch", "reasons": reasons}
+        reasons.append("Yan metriklerde (guardrail) olumsuz sapma görülüyor.")
+        return {"decision": "Do Not Launch", "reasons": reasons}
     if p_value is None:
-        return {"decision": "Re-run Experiment", "icon": "Re-run", "reasons": ["İstatistik sonucu üretilemedi."]}
+        return {"decision": "Re-run Experiment", "reasons": ["İstatistik sonucu üretilemedi."]}
     if p_value < alpha and (uplift_abs is not None and uplift_abs > 0):
-        reasons.append(f"p-değeri {p_value:.4f} < alpha {alpha:.3f}.")
-        if bayes_prob is not None:
-            reasons.append(f"Varyantın daha iyi olma olasılığı: {bayes_prob*100:.1f}%.")
-        return {"decision": "Ship Winner", "icon": "Ship Winner", "reasons": reasons}
+        reasons.append("Sonuç istatistiksel olarak anlamlı ve varyant kontrolden daha iyi.")
+        return {"decision": "Ship Winner", "reasons": reasons}
     if p_value < alpha and (uplift_abs is not None and uplift_abs < 0):
-        reasons.append("Varyant anlamlı şekilde daha kötü.")
-        return {"decision": "Do Not Launch", "icon": "Do Not Launch", "reasons": reasons}
+        reasons.append("Varyant anlamlı şekilde kontrolden daha kötü performans gösterdi.")
+        return {"decision": "Do Not Launch", "reasons": reasons}
     if p_value >= alpha and n_actual >= n_required:
-        reasons.append("Örneklem yeterli ancak anlamlı fark yok.")
-        return {"decision": "No Significant Difference", "icon": "No Difference", "reasons": reasons}
-    reasons.append("Sonuç kararsız, testin devam etmesi önerilir.")
-    return {"decision": "Continue Test", "icon": "Continue", "reasons": reasons}
+        reasons.append("Örneklem yeterli; ancak anlamlı bir fark görülmüyor.")
+        return {"decision": "No Significant Difference", "reasons": reasons}
+    reasons.append("Sonuç kararsız, testin bir süre daha çalıştırılması önerilir.")
+    return {"decision": "Continue Test", "reasons": reasons}
 
 
-def build_executive_summary(result: Dict, decision: Dict, hypothesis: str) -> str:
-    lines: List[str] = []
-    lines.append("EXECUTIVE SUMMARY")
-    lines.append(f"Hipotez: {hypothesis or '-'}")
-    lines.append(f"Karar: {decision.get('decision','-')}")
-    if result:
-        if "p_value" in result:
-            lines.append(f"p-değer: {result['p_value']:.4f}")
-        if "uplift_rel" in result and result.get("uplift_rel") is not None and not (
-            isinstance(result["uplift_rel"], float) and math.isnan(result["uplift_rel"])
-        ):
-            lines.append(f"Relatif uplift: {result['uplift_rel']*100:.2f}%")
-        if "uplift_abs" in result and result.get("uplift_abs") is not None:
-            lines.append(f"Mutlak fark: {result['uplift_abs']:.4f}")
-        if "ci_low" in result and "ci_high" in result:
-            lines.append(f"Güven aralığı: [{result['ci_low']:.4f}, {result['ci_high']:.4f}]")
-        if "n_control" in result:
-            lines.append(f"Örneklem: kontrol={result['n_control']:,}, varyant={result['n_variant']:,}")
-    for r in decision.get("reasons", []):
-        lines.append(f"- {r}")
-    return "\n".join(lines)
+def confidence_label(p_value: float) -> str:
+    if p_value < 0.001:
+        return "Çok yüksek güven (%99.9+)"
+    if p_value < 0.01:
+        return "Yüksek güven (%99)"
+    if p_value < 0.05:
+        return "Yeterli güven (%95)"
+    if p_value < 0.1:
+        return "Düşük güven (%90)"
+    return "Güven seviyesi yetersiz"
 
 
-def llm_explain(summary_text: str) -> Optional[str]:
-    client, model = get_llm_client()
-    if client is None or not model:
+def guardrail_keywords() -> List[str]:
+    return [
+        "bounce", "error", "refund", "churn", "unsubscribe", "unsub",
+        "complaint", "return", "iade", "cikis", "hata", "sikayet",
+    ]
+
+
+def autodetect_columns(df: pd.DataFrame, metric_kind: str) -> Dict[str, Optional[str]]:
+    lower = {c.lower(): c for c in df.columns}
+
+    def find(keywords: List[str]) -> Optional[str]:
+        for k in keywords:
+            for lc, orig in lower.items():
+                if k in lc:
+                    return orig
         return None
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Sen bir A/B test analistisin. Verilen teknik özet üzerinden "
-                        "yöneticiler için Türkçe, sade ve aksiyon odaklı bir açıklama üret. "
-                        "Çıktın: kısa özet, sonuç yorumu, önerilen aksiyon ve riskler. "
-                        "Emoji kullanma."
-                    ),
-                },
-                {"role": "user", "content": summary_text},
-            ],
-            temperature=0.3,
+
+    binary_keys = ["convert", "click", "purchase", "signup", "success", "donusum", "tiklama", "satin"]
+    continuous_keys = ["revenue", "value", "amount", "duration", "gelir", "ciro", "tutar", "sure"]
+
+    variant = find(["variant", "group", "arm", "grup", "varyant", "treatment", "test_group"])
+    timestamp = find(["timestamp", "date", "time", "tarih", "created_at", "occurred"])
+    segment = find(["segment", "device", "country", "channel", "platform", "plan", "region"])
+    pre_metric = find(["pre_", "previous_", "prev_", "before_", "onceki_", "onki_"])
+    if metric_kind == "Dönüşüm / Tıklama / Evet-Hayır":
+        metric = find(binary_keys)
+        if metric is None:
+            for c in df.columns:
+                if c == variant or c == timestamp:
+                    continue
+                s = pd.to_numeric(df[c], errors="coerce").dropna()
+                if len(s) > 0 and set(s.unique().tolist()).issubset({0, 1}):
+                    metric = c
+                    break
+    else:
+        metric = find(continuous_keys)
+        if metric is None:
+            for c in df.columns:
+                if c in {variant, timestamp, segment, pre_metric}:
+                    continue
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    s = pd.to_numeric(df[c], errors="coerce").dropna()
+                    if len(s) > 0 and not set(s.unique().tolist()).issubset({0, 1}):
+                        metric = c
+                        break
+    return {"variant": variant, "metric": metric, "timestamp": timestamp, "segment": segment, "pre_metric": pre_metric}
+
+
+def pick_control_label(variants: List[str]) -> str:
+    priority = ["control", "kontrol", "a", "baseline"]
+    lower = {v.lower(): v for v in variants}
+    for p in priority:
+        if p in lower:
+            return lower[p]
+    return sorted(variants)[0]
+
+
+def run_full_analysis(
+    df: pd.DataFrame,
+    mapping: Dict[str, Optional[str]],
+    metric_kind: str,
+    alpha: float,
+    power: float,
+    mde_hint: float,
+) -> Dict:
+    variant_col = mapping["variant"]
+    metric_col = mapping["metric"]
+    segment_col = mapping.get("segment")
+    pre_metric_col = mapping.get("pre_metric")
+    timestamp_col = mapping.get("timestamp")
+
+    is_binary = metric_kind == "Dönüşüm / Tıklama / Evet-Hayır"
+
+    variant_series = df[variant_col].astype(str)
+    counts_dict = variant_series.value_counts().to_dict()
+    all_variants = list(counts_dict.keys())
+    if len(all_variants) < 2:
+        return {"error": "Veri setinde en az 2 varyant bulunamadı."}
+    control = pick_control_label(all_variants)
+    variant_labels = [v for v in all_variants if v != control]
+
+    expected = {k: 1 / len(all_variants) for k in all_variants}
+    srm = srm_check(counts_dict, expected)
+
+    guard_cols = [
+        c for c in df.columns
+        if c not in {variant_col, metric_col, timestamp_col}
+        and any(kw in c.lower() for kw in guardrail_keywords())
+        and pd.api.types.is_numeric_dtype(df[c])
+    ]
+
+    analyses: List[Dict] = []
+    for v in variant_labels:
+        sub_c = df[variant_series == control][metric_col]
+        sub_v = df[variant_series == v][metric_col]
+        c_num = pd.to_numeric(sub_c, errors="coerce").dropna()
+        v_num = pd.to_numeric(sub_v, errors="coerce").dropna()
+
+        if is_binary:
+            stat = run_z_test(int(c_num.sum()), int(len(c_num)), int(v_num.sum()), int(len(v_num)), alpha)
+            bayes = bayesian_binary(int(c_num.sum()), int(len(c_num)), int(v_num.sum()), int(len(v_num)))
+        else:
+            stat = run_t_test(c_num.to_numpy(dtype=float), v_num.to_numpy(dtype=float), alpha)
+            bayes = bayesian_continuous(c_num.to_numpy(dtype=float), v_num.to_numpy(dtype=float))
+
+        if "error" in stat:
+            analyses.append({"variant": v, "error": stat["error"]})
+            continue
+
+        if is_binary:
+            base_rate = float(stat.get("p_control", 0.1)) or 0.1
+            n_req = sample_size_binary(base_rate, max(mde_hint, 0.001), alpha, power)
+        else:
+            sd = (float(stat.get("sd_control", 0)) + float(stat.get("sd_variant", 0))) / 2
+            baseline_mean = float(stat.get("mean_control", 1.0)) or 1.0
+            n_req = sample_size_continuous(sd, max(mde_hint * abs(baseline_mean), 0.001), alpha, power)
+        n_actual = int(stat.get("n_control", 0)) + int(stat.get("n_variant", 0))
+        n_req_total = n_req * 2
+
+        guard_rows = []
+        guard_violated = False
+        for gc in guard_cols:
+            c_mean = float(df[variant_series == control][gc].mean())
+            v_mean = float(df[variant_series == v][gc].mean())
+            if math.isnan(c_mean) or c_mean == 0:
+                rel = 0.0
+            else:
+                rel = (v_mean - c_mean) / abs(c_mean)
+            bad = rel > 0.02
+            if bad:
+                guard_violated = True
+            guard_rows.append({
+                "metric": gc,
+                "control_mean": c_mean,
+                "variant_mean": v_mean,
+                "relative_change": rel,
+                "violated": bad,
+            })
+
+        dec = decision_engine(
+            p_value=stat.get("p_value"),
+            uplift_abs=stat.get("uplift_abs"),
+            alpha=alpha,
+            guardrail_violated=guard_violated,
+            n_required=n_req_total,
+            n_actual=n_actual,
         )
-        return resp.choices[0].message.content.strip()
-    except Exception as exc:
-        return f"LLM açıklaması üretilemedi: {exc}"
+
+        segment_rows: List[Dict] = []
+        if segment_col:
+            sub_v_full = df[variant_series.isin([control, v])].copy()
+            for seg, g in sub_v_full.groupby(segment_col, dropna=False):
+                gc_arr = pd.to_numeric(g[g[variant_col].astype(str) == control][metric_col], errors="coerce").dropna()
+                gv_arr = pd.to_numeric(g[g[variant_col].astype(str) == v][metric_col], errors="coerce").dropna()
+                if len(gc_arr) < 10 or len(gv_arr) < 10:
+                    continue
+                if is_binary:
+                    r = run_z_test(int(gc_arr.sum()), int(len(gc_arr)), int(gv_arr.sum()), int(len(gv_arr)), alpha)
+                else:
+                    r = run_t_test(gc_arr.to_numpy(dtype=float), gv_arr.to_numpy(dtype=float), alpha)
+                if "error" in r:
+                    continue
+                segment_rows.append({
+                    "segment": str(seg),
+                    "n_control": r.get("n_control"),
+                    "n_variant": r.get("n_variant"),
+                    "uplift_rel": r.get("uplift_rel"),
+                    "p_value": r.get("p_value"),
+                })
+            if segment_rows:
+                adj = multiple_testing_correction([r["p_value"] for r in segment_rows], method="fdr_bh")
+                for row, p_adj in zip(segment_rows, adj):
+                    row["p_value_fdr"] = p_adj
+                    row["category"] = "Confirmed" if p_adj < alpha else "Exploratory"
+
+        cuped_info = None
+        if pre_metric_col and not is_binary:
+            mask = df[variant_series.isin([control, v])].index
+            pre = pd.to_numeric(df.loc[mask, pre_metric_col], errors="coerce").to_numpy(dtype=float)
+            post = pd.to_numeric(df.loc[mask, metric_col], errors="coerce").to_numpy(dtype=float)
+            keep = ~(np.isnan(pre) | np.isnan(post))
+            if keep.sum() > 10:
+                cuped = cuped_adjust(pre[keep], post[keep])
+                if "error" not in cuped:
+                    cuped_info = {"variance_reduction_pct": cuped["variance_reduction_pct"], "theta": cuped["theta"]}
+
+        analyses.append({
+            "variant": v,
+            "stat": stat,
+            "bayes": bayes,
+            "guardrail": {"violated": guard_violated, "rows": guard_rows},
+            "n_required": n_req_total,
+            "n_actual": n_actual,
+            "decision": dec,
+            "segments": segment_rows,
+            "cuped": cuped_info,
+        })
+
+    quality = {
+        "srm": srm,
+        "duplicates": int(df.duplicated().sum()),
+        "missing_variant": int(df[variant_col].isna().sum()),
+        "missing_metric": int(df[metric_col].isna().sum()),
+        "outliers": detect_outliers_iqr(pd.to_numeric(df[metric_col], errors="coerce").dropna().to_numpy()) if pd.api.types.is_numeric_dtype(df[metric_col]) else 0,
+    }
+
+    trend = None
+    if timestamp_col:
+        try:
+            tmp = df[[timestamp_col, variant_col, metric_col]].copy()
+            tmp[timestamp_col] = pd.to_datetime(tmp[timestamp_col], errors="coerce")
+            tmp = tmp.dropna(subset=[timestamp_col])
+            if not tmp.empty:
+                tmp[metric_col] = pd.to_numeric(tmp[metric_col], errors="coerce")
+                trend = (
+                    tmp.groupby([pd.Grouper(key=timestamp_col, freq="D"), variant_col])[metric_col]
+                    .mean()
+                    .reset_index()
+                )
+        except Exception:
+            trend = None
+
+    return {
+        "metric_kind": metric_kind,
+        "is_binary": is_binary,
+        "alpha": alpha,
+        "power": power,
+        "control": control,
+        "variants": variant_labels,
+        "variant_col": variant_col,
+        "metric_col": metric_col,
+        "analyses": analyses,
+        "quality": quality,
+        "trend": trend,
+    }
 
 
-def export_excel(
-    hypothesis: str,
-    result: Optional[Dict],
-    decision: Optional[Dict],
-    validation: Optional[Dict],
-    bayes: Optional[Dict],
-    segment: Optional[pd.DataFrame],
-) -> bytes:
+def export_excel(hypothesis: str, result: Dict) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         pd.DataFrame(
             {
-                "field": ["hypothesis", "timestamp"],
-                "value": [hypothesis, datetime.now().isoformat(timespec="seconds")],
+                "field": ["hypothesis", "metric_kind", "alpha", "power", "timestamp"],
+                "value": [
+                    hypothesis,
+                    result.get("metric_kind"),
+                    result.get("alpha"),
+                    result.get("power"),
+                    datetime.now().isoformat(timespec="seconds"),
+                ],
             }
         ).to_excel(writer, sheet_name="Summary", index=False)
-        if result:
-            pd.DataFrame([{k: v for k, v in result.items() if not isinstance(v, (list, np.ndarray))}]).to_excel(
-                writer, sheet_name="Analysis", index=False
+        rows: List[Dict] = []
+        for a in result.get("analyses", []):
+            if "error" in a:
+                continue
+            st_ = a["stat"]
+            rows.append(
+                {
+                    "variant": a["variant"],
+                    "decision": a["decision"]["decision"],
+                    "p_value": st_.get("p_value"),
+                    "uplift_rel": st_.get("uplift_rel"),
+                    "uplift_abs": st_.get("uplift_abs"),
+                    "ci_low": st_.get("ci_low"),
+                    "ci_high": st_.get("ci_high"),
+                    "n_control": st_.get("n_control"),
+                    "n_variant": st_.get("n_variant"),
+                    "prob_variant_better": a["bayes"].get("prob_variant_better"),
+                }
             )
-        if decision:
-            pd.DataFrame(
-                [
-                    {
-                        "decision": decision.get("decision"),
-                        "reasons": " | ".join(decision.get("reasons", [])),
-                    }
-                ]
-            ).to_excel(writer, sheet_name="Decision", index=False)
-        if validation:
-            pd.DataFrame([validation]).to_excel(writer, sheet_name="Validation", index=False)
-        if bayes:
-            pd.DataFrame([bayes]).to_excel(writer, sheet_name="Bayesian", index=False)
-        if segment is not None and not segment.empty:
-            segment.to_excel(writer, sheet_name="Segments", index=False)
+        if rows:
+            pd.DataFrame(rows).to_excel(writer, sheet_name="Results", index=False)
+        for a in result.get("analyses", []):
+            if "error" in a:
+                continue
+            g_rows = a["guardrail"]["rows"]
+            if g_rows:
+                pd.DataFrame(g_rows).to_excel(writer, sheet_name=f"Guardrail_{a['variant'][:20]}", index=False)
+            if a.get("segments"):
+                pd.DataFrame(a["segments"]).to_excel(writer, sheet_name=f"Segments_{a['variant'][:20]}", index=False)
+        q = result.get("quality", {})
+        if q:
+            pd.DataFrame([
+                {"check": "SRM p-value", "value": q.get("srm", {}).get("p_value")},
+                {"check": "Duplicates", "value": q.get("duplicates")},
+                {"check": "Missing variant", "value": q.get("missing_variant")},
+                {"check": "Missing metric", "value": q.get("missing_metric")},
+                {"check": "Outliers", "value": q.get("outliers")},
+            ]).to_excel(writer, sheet_name="DataQuality", index=False)
     buf.seek(0)
     return buf.getvalue()
 
@@ -520,118 +670,136 @@ def export_json(payload: Dict) -> bytes:
             return float(o)
         if isinstance(o, np.ndarray):
             return o.tolist()
+        if isinstance(o, pd.DataFrame):
+            return o.to_dict(orient="records")
         return str(o)
-
     return json.dumps(payload, indent=2, ensure_ascii=False, default=_default).encode("utf-8")
 
 
-def sidebar_nav() -> str:
+def build_summary_text(hypothesis: str, result: Dict) -> str:
+    lines = [
+        "A/B TEST ÖZETİ",
+        f"Hipotez: {hypothesis or '-'}",
+        f"Metrik tipi: {result.get('metric_kind')}",
+        f"Kontrol: {result.get('control')}",
+    ]
+    for a in result.get("analyses", []):
+        if "error" in a:
+            lines.append(f"- {a['variant']}: {a['error']}")
+            continue
+        s = a["stat"]
+        lines.append("")
+        lines.append(f"Varyant: {a['variant']}")
+        lines.append(f"Karar: {a['decision']['decision']}")
+        if "p_value" in s:
+            lines.append(f"p-değer: {s['p_value']:.4f}")
+        if s.get("uplift_rel") is not None and not (isinstance(s["uplift_rel"], float) and math.isnan(s["uplift_rel"])):
+            lines.append(f"Relatif fark: {s['uplift_rel']*100:+.2f}%")
+        lines.append(f"Örneklem: kontrol={s.get('n_control', 0):,}, varyant={s.get('n_variant', 0):,}")
+        for r in a["decision"]["reasons"]:
+            lines.append(f"- {r}")
+    return "\n".join(lines)
+
+
+def go_to(step: int) -> None:
+    st.session_state.step = step
+    safe_rerun()
+
+
+def reset_all() -> None:
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    safe_rerun()
+
+
+def sidebar() -> None:
     st.sidebar.title("A/B Testing Agent")
-    st.sidebar.caption("Uçtan uca deney yönetim aracı")
-    return st.sidebar.radio(
-        "Adımlar",
-        [
-            "1. Deney Tasarımı",
-            "2. Veri Yükleme & Eşleme",
-            "3. Veri Validasyonu",
-            "4. İstatistiksel Analiz",
-            "5. Guardrail İzleme",
-            "6. Bayesian Analiz",
-            "7. Sequential / Peeking",
-            "8. CUPED & Düzeltmeler",
-            "9. Segment Analizi",
-            "10. What-If Simülasyonu",
-            "11. Anomali İzleme",
-            "12. Karar & Rapor",
-            "13. Deney Bilgi Bankası",
-        ],
-        index=0,
+    st.sidebar.caption("3 adımda kolay A/B test")
+    current = st.session_state.step
+    steps = [(1, "Deneyim"), (2, "Veri"), (3, "Sonuç")]
+    for i, label in steps:
+        if i == current:
+            st.sidebar.markdown(f"**{i}. {label} — şu an**")
+        elif i < current:
+            st.sidebar.markdown(f"{i}. {label} (tamamlandı)")
+        else:
+            st.sidebar.markdown(f"{i}. {label}")
+    st.sidebar.divider()
+    if st.sidebar.button("Yeni deney başlat", use_container_width=True):
+        reset_all()
+    with st.sidebar.expander("Yardım"):
+        st.markdown(
+            "1. **Deneyim**: Neyi test ettiğinizi ve başarıyı nasıl ölçtüğünüzü söyleyin.\n"
+            "2. **Veri**: CSV/XLSX dosyanızı yükleyin; kolon eşlemesini sistem otomatik yapar.\n"
+            "3. **Sonuç**: Karar, etki ve güven seviyesi tek kartta. Detaylar expander'larda."
+        )
+
+
+def page1_setup() -> None:
+    st.header("1. Deneyim hakkında")
+    st.caption("Neyi test ettiğinizi ve nasıl ölçtüğünüzü bize söyleyin. Teknik bilgi gerekmez.")
+
+    st.session_state.hypothesis = st.text_area(
+        "Ne test ediyorsunuz?",
+        value=st.session_state.hypothesis,
+        placeholder="Örn: Yeni ana sayfa tasarımı dönüşüm oranını artıracak.",
+        height=90,
     )
 
+    st.session_state.metric_kind = st.radio(
+        "Başarıyı nasıl ölçüyorsunuz?",
+        [
+            "Dönüşüm / Tıklama / Evet-Hayır",
+            "Gelir / Süre / Sayısal değer",
+        ],
+        index=0 if st.session_state.metric_kind.startswith("Dönüşüm") else 1,
+        help="Dönüşüm: kullanıcı bir eylemi yaptı mı (evet/hayır). Gelir/Süre: sayısal bir değer.",
+    )
 
-def page_experiment_setup() -> None:
-    st.header("Deney Tasarımı")
-    st.caption("Hipotez, metrik seçimi, trafik dağılımı ve otomatik sample size.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.session_state.hypothesis = st.text_area(
-            "Hipotez",
-            value=st.session_state.hypothesis,
-            placeholder="Örn: Yeni checkout akışı dönüşüm oranını artıracak.",
-            height=100,
+    default_mde_pct = int(round(st.session_state.mde_hint * 100))
+    if st.session_state.metric_kind.startswith("Dönüşüm"):
+        mde_pct = st.slider(
+            "En az ne kadarlık bir iyileşme anlamlı sayılır?",
+            min_value=1, max_value=20, value=max(1, default_mde_pct),
+            help="Ör: Mevcut dönüşüm %10 ise ve 2 puanlık bir artışı anlamlı buluyorsanız 2 seçin.",
         )
-        st.session_state.metric_type = st.selectbox(
-            "Primary metric tipi",
-            ["Binary", "Continuous", "Count", "Rate", "Retention"],
-            index=["Binary", "Continuous", "Count", "Rate", "Retention"].index(
-                st.session_state.metric_type
-            ),
-        )
-        st.session_state.alpha = st.number_input(
-            "Alpha (Significance)", min_value=0.001, max_value=0.2, value=st.session_state.alpha, step=0.005
-        )
-        st.session_state.power = st.number_input(
-            "Power", min_value=0.5, max_value=0.99, value=st.session_state.power, step=0.05
-        )
-    with col2:
-        st.session_state.mde = st.number_input(
-            "Minimum Detectable Effect (MDE, mutlak)",
-            min_value=0.0001,
-            value=float(st.session_state.mde),
-            step=0.005,
-            format="%.4f",
-        )
-        n_arms = st.number_input("Kol sayısı (kontrol dahil)", min_value=2, max_value=6, value=2, step=1)
-        default_split = [1 / n_arms] * n_arms
-        split_text = st.text_input(
-            "Trafik dağılımı (virgüllü, toplam 1)",
-            value=",".join(f"{x:.2f}" for x in default_split),
-        )
-        try:
-            parsed = [float(x.strip()) for x in split_text.split(",") if x.strip()]
-            if len(parsed) == n_arms and abs(sum(parsed) - 1.0) < 0.01:
-                st.session_state.traffic_split = parsed
-            else:
-                st.warning("Dağılım toplamı 1 olmalı ve kol sayısına eşit olmalı.")
-        except Exception:
-            st.warning("Dağılım parse edilemedi.")
-
-    st.subheader("Sample Size Hesaplayıcı")
-    if st.session_state.metric_type == "Binary":
-        st.session_state.baseline_rate = st.number_input(
-            "Baseline conversion rate (kontrol)",
-            min_value=0.0001,
-            max_value=0.9999,
-            value=float(st.session_state.baseline_rate),
-            step=0.005,
-            format="%.4f",
-        )
-        n = sample_size_binary(
-            st.session_state.baseline_rate, st.session_state.mde, st.session_state.alpha, st.session_state.power
-        )
+        st.session_state.mde_hint = mde_pct / 100.0
+        st.caption(f"Seçilen duyarlılık: +{mde_pct} puan mutlak değişim.")
     else:
-        st.session_state.baseline_mean = st.number_input(
-            "Baseline ortalama", value=float(st.session_state.baseline_mean)
+        mde_pct = st.slider(
+            "En az yüzde kaç iyileşme anlamlı sayılır?",
+            min_value=1, max_value=30, value=max(1, default_mde_pct),
+            help="Örn: Kontrol ortalaması 100 TL ise %5'lik bir artış 5 TL'dir.",
         )
-        st.session_state.baseline_std = st.number_input(
-            "Baseline standart sapma", min_value=0.0001, value=float(st.session_state.baseline_std)
+        st.session_state.mde_hint = mde_pct / 100.0
+        st.caption(f"Seçilen duyarlılık: %{mde_pct} relatif değişim.")
+
+    with st.expander("Gelişmiş ayarlar (opsiyonel)"):
+        st.session_state.alpha = st.select_slider(
+            "Güven seviyesi",
+            options=[0.01, 0.05, 0.10],
+            value=st.session_state.alpha,
+            format_func=lambda a: f"%{int((1-a)*100)} güven",
         )
-        n = sample_size_continuous(
-            st.session_state.baseline_std,
-            st.session_state.mde,
-            st.session_state.alpha,
-            st.session_state.power,
+        st.session_state.power = st.select_slider(
+            "İstatistiksel güç (power)",
+            options=[0.70, 0.80, 0.90, 0.95],
+            value=st.session_state.power,
+            format_func=lambda p: f"{int(p*100)}%",
         )
+        st.caption("Varsayılan %95 güven ve %80 güç, çoğu test için uygundur.")
 
-    st.metric("Kol başına önerilen örneklem", f"{n:,}")
-    total = n * int(n_arms)
-    st.caption(f"Toplam gereken örneklem yaklaşık {total:,}.")
+    c1, c2 = st.columns([1, 4])
+    with c1:
+        if st.button("Devam et", type="primary", use_container_width=True):
+            go_to(2)
 
 
-def page_upload() -> None:
-    st.header("Veri Yükleme & Eşleme")
-    uploaded = st.file_uploader("CSV veya XLSX", type=["csv", "xlsx", "xls"])
+def page2_data() -> None:
+    st.header("2. Veri")
+    st.caption("CSV veya XLSX dosyanızı yükleyin. Kolonları sizin için otomatik eşleyeceğiz.")
+
+    uploaded = st.file_uploader("Dosya seç", type=["csv", "xlsx", "xls"])
     if uploaded is not None:
         df = load_dataframe(uploaded)
         if df is None:
@@ -639,642 +807,306 @@ def page_upload() -> None:
             return
         st.session_state.df = df
         st.session_state.file_name = uploaded.name
-        st.success(f"Yüklendi: {uploaded.name} ({len(df):,} satır, {df.shape[1]} kolon)")
+        st.session_state.auto_mapping = autodetect_columns(df, st.session_state.metric_kind)
+        st.session_state.mapping = dict(st.session_state.auto_mapping)
 
     df = st.session_state.df
     if df is None:
-        st.info("Önce veri yükleyin.")
+        st.info("Yukarıdan bir dosya yükleyin.")
+        c1, c2 = st.columns([1, 4])
+        with c1:
+            if st.button("Geri", use_container_width=True):
+                go_to(1)
         return
+
+    st.success(f"Yüklendi: {st.session_state.file_name} — {len(df):,} satır, {df.shape[1]} kolon")
 
     st.subheader("Önizleme")
-    st.dataframe(df.head(50), use_container_width=True)
+    st.dataframe(df.head(20), use_container_width=True)
 
-    st.subheader("Kolon Eşleme")
-    cols = list(df.columns)
-    c1, c2, c3 = st.columns(3)
+    auto = st.session_state.auto_mapping or {}
+    mapping = st.session_state.mapping or {}
+
+    st.subheader("Otomatik algılanan kolonlar")
+    auto_summary = {
+        "Varyant (grup)": mapping.get("variant") or "(bulunamadı)",
+        "Başarı metriği": mapping.get("metric") or "(bulunamadı)",
+        "Zaman": mapping.get("timestamp") or "(yok)",
+        "Segment": mapping.get("segment") or "(yok)",
+        "Önceki dönem metriği": mapping.get("pre_metric") or "(yok)",
+    }
+    for k, v in auto_summary.items():
+        st.markdown(f"- **{k}**: {v}")
+
+    with st.expander("Manuel ayarla"):
+        cols = list(df.columns)
+        none_opts = ["(yok)"] + cols
+        def _idx(val: Optional[str], opts: List[str]) -> int:
+            if val and val in opts:
+                return opts.index(val)
+            return 0
+        mapping["variant"] = st.selectbox("Varyant kolonu", cols, index=_idx(mapping.get("variant"), cols))
+        mapping["metric"] = st.selectbox("Metric kolonu", cols, index=_idx(mapping.get("metric"), cols))
+        ts_sel = st.selectbox("Zaman kolonu", none_opts, index=_idx(mapping.get("timestamp"), none_opts))
+        mapping["timestamp"] = None if ts_sel == "(yok)" else ts_sel
+        seg_sel = st.selectbox("Segment kolonu", none_opts, index=_idx(mapping.get("segment"), none_opts))
+        mapping["segment"] = None if seg_sel == "(yok)" else seg_sel
+        pre_sel = st.selectbox("Önceki dönem metriği (CUPED için)", none_opts, index=_idx(mapping.get("pre_metric"), none_opts))
+        mapping["pre_metric"] = None if pre_sel == "(yok)" else pre_sel
+        st.session_state.mapping = mapping
+
+    ready = bool(mapping.get("variant") and mapping.get("metric"))
+    if not ready:
+        st.warning("Devam etmek için en az varyant ve metric kolonları seçilmeli.")
+
+    c1, c2, c3 = st.columns([1, 1, 3])
     with c1:
-        st.session_state.variant_col = st.selectbox(
-            "Variant kolonu", cols, index=cols.index(st.session_state.variant_col) if st.session_state.variant_col in cols else 0
-        )
+        if st.button("Geri", use_container_width=True):
+            go_to(1)
     with c2:
-        st.session_state.metric_col = st.selectbox(
-            "Primary metric kolonu",
-            cols,
-            index=cols.index(st.session_state.metric_col) if st.session_state.metric_col in cols else 0,
-        )
-    with c3:
-        ts_options = ["(yok)"] + cols
-        cur = st.session_state.timestamp_col or "(yok)"
-        st.session_state.timestamp_col = st.selectbox(
-            "Timestamp kolonu", ts_options, index=ts_options.index(cur) if cur in ts_options else 0
-        )
-        if st.session_state.timestamp_col == "(yok)":
-            st.session_state.timestamp_col = None
-
-    c4, c5 = st.columns(2)
-    with c4:
-        seg_options = ["(yok)"] + cols
-        cur_seg = st.session_state.segment_col or "(yok)"
-        st.session_state.segment_col = st.selectbox(
-            "Segment kolonu (opsiyonel)",
-            seg_options,
-            index=seg_options.index(cur_seg) if cur_seg in seg_options else 0,
-        )
-        if st.session_state.segment_col == "(yok)":
-            st.session_state.segment_col = None
-    with c5:
-        pre_options = ["(yok)"] + cols
-        cur_pre = st.session_state.pre_metric_col or "(yok)"
-        st.session_state.pre_metric_col = st.selectbox(
-            "Pre-period metric (CUPED için)",
-            pre_options,
-            index=pre_options.index(cur_pre) if cur_pre in pre_options else 0,
-        )
-        if st.session_state.pre_metric_col == "(yok)":
-            st.session_state.pre_metric_col = None
-
-    if st.session_state.variant_col:
-        variants = sorted([str(x) for x in df[st.session_state.variant_col].dropna().unique().tolist()])
-        if variants:
-            default_ctrl = st.session_state.control_label if st.session_state.control_label in variants else variants[0]
-            st.session_state.control_label = st.selectbox(
-                "Kontrol etiketi", variants, index=variants.index(default_ctrl)
-            )
-            st.session_state.variant_labels = [v for v in variants if v != st.session_state.control_label]
-            st.caption(
-                f"Kontrol: {st.session_state.control_label} | Varyantlar: {', '.join(st.session_state.variant_labels)}"
-            )
+        if st.button("Analizi başlat", type="primary", disabled=not ready, use_container_width=True):
+            with st.spinner("Analiz çalışıyor..."):
+                try:
+                    result = run_full_analysis(
+                        df, st.session_state.mapping,
+                        st.session_state.metric_kind,
+                        st.session_state.alpha,
+                        st.session_state.power,
+                        st.session_state.mde_hint,
+                    )
+                except Exception as exc:
+                    st.error(f"Analiz hatası: {exc}")
+                    return
+            if "error" in result:
+                st.error(result["error"])
+                return
+            st.session_state.full_result = result
+            go_to(3)
 
 
-def require_mapping() -> bool:
-    if st.session_state.df is None:
-        st.info("Önce veri yükleyin.")
-        return False
-    if not st.session_state.variant_col or not st.session_state.metric_col:
-        st.info("Variant ve metric kolonlarını eşleyin.")
-        return False
-    return True
+def decision_card(decision_text: str) -> None:
+    mapping = {
+        "Ship Winner": ("Varyant kazandı. Yayına alınabilir.", "success"),
+        "Do Not Launch": ("Varyant yayına alınmamalı.", "error"),
+        "Continue Test": ("Kesin karar için teste devam edilmeli.", "info"),
+        "No Significant Difference": ("Kontrol ile varyant arasında anlamlı fark yok.", "warning"),
+        "Re-run Experiment": ("Testi yeniden kurgulayın.", "warning"),
+    }
+    text, kind = mapping.get(decision_text, ("Sonuç belirsiz", "info"))
+    title = f"Sonuç: {text}"
+    if kind == "success":
+        st.success(title)
+    elif kind == "error":
+        st.error(title)
+    elif kind == "warning":
+        st.warning(title)
+    else:
+        st.info(title)
 
 
-def get_two_arms() -> Optional[Tuple[str, str, pd.DataFrame]]:
-    if not require_mapping():
-        return None
-    df = st.session_state.df
-    if not st.session_state.variant_labels:
-        st.info("Varyant bulunamadı.")
-        return None
-    ctrl = st.session_state.control_label
-    variant = st.selectbox("Karşılaştırılacak varyant", st.session_state.variant_labels)
-    sub = df[df[st.session_state.variant_col].astype(str).isin([str(ctrl), str(variant)])].copy()
-    return ctrl, variant, sub
-
-
-def page_validation() -> None:
-    st.header("Veri Validasyonu")
-    if not require_mapping():
+def plot_trend(trend: pd.DataFrame, variant_col: str, metric_col: str) -> None:
+    if trend is None or trend.empty:
         return
-    df = st.session_state.df
-    report: Dict = {}
-
-    variant_col = st.session_state.variant_col
-    metric_col = st.session_state.metric_col
-
-    counts = df[variant_col].astype(str).value_counts().to_dict()
-    total = sum(counts.values())
-    n_arms = len(counts)
-    if n_arms >= 2 and total > 0:
-        if st.session_state.traffic_split and len(st.session_state.traffic_split) == n_arms:
-            labels = list(counts.keys())
-            expected = dict(zip(labels, st.session_state.traffic_split))
-        else:
-            expected = {k: 1 / n_arms for k in counts}
-        srm = srm_check(counts, expected)
-        report["srm"] = srm
-
-    dup_count = int(df.duplicated().sum())
-    report["duplicates"] = dup_count
-
-    missing = df[[variant_col, metric_col]].isna().sum().to_dict()
-    report["missing"] = {k: int(v) for k, v in missing.items()}
-
-    if pd.api.types.is_numeric_dtype(df[metric_col]):
-        outliers, bounds = detect_outliers_iqr(df[metric_col].dropna().to_numpy())
-        report["outliers"] = {"count": outliers, "lower": bounds[0], "upper": bounds[1]}
-
-    try:
-        _ = pd.to_numeric(df[metric_col], errors="raise")
-        report["metric_numeric"] = True
-    except Exception:
-        report["metric_numeric"] = False
-
-    if st.session_state.timestamp_col:
-        try:
-            ts = pd.to_datetime(df[st.session_state.timestamp_col], errors="coerce")
-            report["timestamp_parsable_pct"] = float(ts.notna().mean() * 100)
-        except Exception:
-            report["timestamp_parsable_pct"] = 0.0
-
-    st.session_state.validation_report = report
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if "srm" in report and isinstance(report["srm"], dict) and "srm_detected" in report["srm"]:
-            st.metric("SRM p-değeri", f"{report['srm']['p_value']:.4f}")
-            if report["srm"]["srm_detected"]:
-                st.error("Sample Ratio Mismatch tespit edildi.")
-            else:
-                st.success("SRM bulunmadı.")
-    with c2:
-        st.metric("Duplicate kayıt", f"{dup_count:,}")
-    with c3:
-        st.metric("Eksik (metric)", f"{report['missing'].get(metric_col, 0):,}")
-
-    st.subheader("Detay Rapor")
-    st.json(report)
-
-    st.subheader("Dağılım")
-    dist = df[variant_col].astype(str).value_counts().reset_index()
-    dist.columns = ["variant", "count"]
-    fig = px.bar(dist, x="variant", y="count")
+    fig = px.line(trend, x=trend.columns[0], y=metric_col, color=variant_col, markers=True)
+    fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), height=320)
     st.plotly_chart(fig, use_container_width=True)
 
 
-def page_statistical_analysis() -> None:
-    st.header("İstatistiksel Analiz")
-    tup = get_two_arms()
-    if tup is None:
-        return
-    ctrl, variant, sub = tup
-    metric_col = st.session_state.metric_col
-    metric_type = st.session_state.metric_type
-
-    method_options = []
-    if metric_type == "Binary":
-        method_options = ["z-test (two-proportion)", "Chi-square"]
+def plot_comparison(stat: Dict, is_binary: bool, control: str, variant: str) -> None:
+    if is_binary:
+        labels = [control, variant]
+        values = [stat.get("p_control", 0) * 100, stat.get("p_variant", 0) * 100]
+        fig = go.Figure(go.Bar(x=labels, y=values, text=[f"%{v:.2f}" for v in values], textposition="outside"))
+        fig.update_layout(yaxis_title="Oran (%)", margin=dict(l=10, r=10, t=10, b=10), height=300)
     else:
-        method_options = ["Welch's t-test", "Student's t-test", "Mann-Whitney U"]
-    method = st.selectbox("Yöntem", method_options)
-
-    c_arr = sub[sub[st.session_state.variant_col].astype(str) == str(ctrl)][metric_col]
-    v_arr = sub[sub[st.session_state.variant_col].astype(str) == str(variant)][metric_col]
-
-    result: Dict = {}
-    if metric_type == "Binary":
-        c_num = pd.to_numeric(c_arr, errors="coerce").dropna()
-        v_num = pd.to_numeric(v_arr, errors="coerce").dropna()
-        c_success = int(c_num.sum())
-        c_n = int(len(c_num))
-        v_success = int(v_num.sum())
-        v_n = int(len(v_num))
-        if method == "z-test (two-proportion)":
-            result = run_z_test(c_success, c_n, v_success, v_n, st.session_state.alpha)
-        else:
-            chi = run_chi_square(c_success, c_n, v_success, v_n)
-            z = run_z_test(c_success, c_n, v_success, v_n, st.session_state.alpha)
-            result = {**z, **{"chi2": chi.get("chi2"), "chi_p": chi.get("p_value")}, "method": "Chi-square"}
-    else:
-        c_num = pd.to_numeric(c_arr, errors="coerce").dropna().to_numpy()
-        v_num = pd.to_numeric(v_arr, errors="coerce").dropna().to_numpy()
-        if method.startswith("Welch"):
-            result = run_t_test(c_num, v_num, st.session_state.alpha, welch=True)
-        elif method.startswith("Student"):
-            result = run_t_test(c_num, v_num, st.session_state.alpha, welch=False)
-        else:
-            result = run_mann_whitney(c_num, v_num)
-
-    st.session_state.analysis_result = result
-
-    if "error" in result:
-        st.error(result["error"])
-        return
-
-    cols = st.columns(4)
-    if "p_value" in result:
-        cols[0].metric("p-değer", f"{result['p_value']:.4f}")
-    if "uplift_rel" in result and result.get("uplift_rel") is not None and not (
-        isinstance(result["uplift_rel"], float) and math.isnan(result["uplift_rel"])
-    ):
-        cols[1].metric("Relatif uplift", f"{result['uplift_rel']*100:.2f}%")
-    if "uplift_abs" in result:
-        cols[2].metric("Mutlak fark", f"{result['uplift_abs']:.4f}")
-    if "ci_low" in result and "ci_high" in result:
-        cols[3].metric("Güven aralığı", f"[{result['ci_low']:.3f}, {result['ci_high']:.3f}]")
-
-    st.subheader("Yöntem ve Detay")
-    st.json({k: v for k, v in result.items() if not isinstance(v, (list, np.ndarray))})
-
-
-def page_guardrail() -> None:
-    st.header("Guardrail İzleme")
-    if not require_mapping():
-        return
-    df = st.session_state.df
-    cols = list(df.columns)
-    selected = st.multiselect(
-        "Guardrail metrikleri",
-        [c for c in cols if c != st.session_state.metric_col],
-        default=st.session_state.guardrails or [],
-    )
-    threshold = st.number_input("Negatif sapma eşiği (relatif)", value=0.02, step=0.005, format="%.3f")
-    st.session_state.guardrails = selected
-
-    if not selected:
-        st.info("Guardrail seçilmedi.")
-        return
-
-    ctrl = st.session_state.control_label
-    rows = []
-    violated = False
-    for col in selected:
-        if not pd.api.types.is_numeric_dtype(df[col]):
-            rows.append({"metric": col, "status": "Sayısal değil, atlandı."})
-            continue
-        c_mean = df[df[st.session_state.variant_col].astype(str) == str(ctrl)][col].mean()
-        for v in st.session_state.variant_labels:
-            v_mean = df[df[st.session_state.variant_col].astype(str) == str(v)][col].mean()
-            if c_mean == 0 or pd.isna(c_mean):
-                rel = np.nan
-            else:
-                rel = (v_mean - c_mean) / abs(c_mean)
-            bad = (rel < -threshold) if not pd.isna(rel) else False
-            if bad:
-                violated = True
-            rows.append(
-                {
-                    "metric": col,
-                    "variant": v,
-                    "control_mean": float(c_mean) if not pd.isna(c_mean) else None,
-                    "variant_mean": float(v_mean) if not pd.isna(v_mean) else None,
-                    "relative_change": None if pd.isna(rel) else float(rel),
-                    "violated": bool(bad),
-                }
-            )
-    table = pd.DataFrame(rows)
-    st.dataframe(table, use_container_width=True)
-    if violated:
-        st.error("Primary metric iyileşmiş olabilir, ancak guardrail metriklerinde olumsuz etki görülüyor.")
-    else:
-        st.success("Guardrail metriklerinde olumsuz sapma yok.")
-    st.session_state.guardrail_result = {"violated": violated, "rows": rows}
-
-
-def page_bayesian() -> None:
-    st.header("Bayesian Analiz")
-    tup = get_two_arms()
-    if tup is None:
-        return
-    ctrl, variant, sub = tup
-    metric_col = st.session_state.metric_col
-    metric_type = st.session_state.metric_type
-
-    c_arr = sub[sub[st.session_state.variant_col].astype(str) == str(ctrl)][metric_col]
-    v_arr = sub[sub[st.session_state.variant_col].astype(str) == str(variant)][metric_col]
-
-    if metric_type == "Binary":
-        c_num = pd.to_numeric(c_arr, errors="coerce").dropna()
-        v_num = pd.to_numeric(v_arr, errors="coerce").dropna()
-        res = bayesian_binary(int(c_num.sum()), int(len(c_num)), int(v_num.sum()), int(len(v_num)))
-    else:
-        c_num = pd.to_numeric(c_arr, errors="coerce").dropna().to_numpy()
-        v_num = pd.to_numeric(v_arr, errors="coerce").dropna().to_numpy()
-        res = bayesian_continuous(c_num, v_num)
-
-    st.session_state.bayes_result = res
-    if "error" in res:
-        st.error(res["error"])
-        return
-    c1, c2, c3 = st.columns(3)
-    c1.metric("P(varyant > kontrol)", f"{res['prob_variant_better']*100:.2f}%")
-    c2.metric("Beklenen lift", f"{res['expected_lift_abs']:.4f}")
-    c3.metric("Expected loss (varyant)", f"{res['expected_loss_variant']:.4f}")
-    st.json(res)
-
-
-def page_sequential() -> None:
-    st.header("Sequential Testing & Peeking-Safe Analiz")
-    tup = get_two_arms()
-    if tup is None:
-        return
-    ctrl, variant, sub = tup
-    metric_col = st.session_state.metric_col
-
-    if st.session_state.metric_type != "Binary":
-        st.info("Bu basitleştirilmiş sequential analiz binary metrikler için kurgulanmıştır.")
-        return
-
-    looks_total = st.number_input("Toplam planlanan bakış sayısı", min_value=2, max_value=50, value=5, step=1)
-    look_idx = st.number_input("Mevcut bakış indeksi", min_value=1, max_value=int(looks_total), value=1, step=1)
-
-    c_num = pd.to_numeric(sub[sub[st.session_state.variant_col].astype(str) == str(ctrl)][metric_col], errors="coerce").dropna()
-    v_num = pd.to_numeric(sub[sub[st.session_state.variant_col].astype(str) == str(variant)][metric_col], errors="coerce").dropna()
-    res = sequential_obf(
-        int(c_num.sum()), int(len(c_num)), int(v_num.sum()), int(len(v_num)),
-        int(looks_total), int(look_idx), st.session_state.alpha
-    )
-    st.session_state.sequential_result = res
-    if "error" in res:
-        st.error(res["error"])
-        return
-    c1, c2, c3 = st.columns(3)
-    c1.metric("t (ilerleme)", f"{res['t_fraction']:.2f}")
-    c2.metric("Düzeltilmiş alpha", f"{res['alpha_boundary']:.4f}")
-    c3.metric("Öneri", res["recommendation"])
-    st.json(res)
-
-
-def page_cuped_correction() -> None:
-    st.header("CUPED & Çoklu Test Düzeltmesi")
-    tup = get_two_arms()
-    if tup is None:
-        return
-    ctrl, variant, sub = tup
-    metric_col = st.session_state.metric_col
-
-    st.subheader("CUPED")
-    if not st.session_state.pre_metric_col:
-        st.info("CUPED için pre-period metric kolonu eşleyin.")
-    else:
-        pre = pd.to_numeric(sub[st.session_state.pre_metric_col], errors="coerce").to_numpy()
-        post = pd.to_numeric(sub[metric_col], errors="coerce").to_numpy()
-        varr = sub[st.session_state.variant_col].astype(str).to_numpy()
-        mask = ~(pd.isna(pre) | pd.isna(post))
-        cuped = cuped_adjust(pre[mask], post[mask], varr[mask], str(ctrl))
-        st.session_state.cuped_result = cuped
-        if "error" in cuped:
-            st.warning(cuped["error"])
-        else:
-            c1, c2 = st.columns(2)
-            c1.metric("Varyans azaltımı", f"{cuped['variance_reduction_pct']:.2f}%")
-            c2.metric("Theta", f"{cuped['theta']:.4f}")
-            adj = cuped["adjusted"]
-            c_mask = varr[mask] == str(ctrl)
-            v_mask = varr[mask] == str(variant)
-            if c_mask.sum() > 1 and v_mask.sum() > 1:
-                t_res = run_t_test(adj[c_mask], adj[v_mask], st.session_state.alpha, welch=True)
-                st.subheader("CUPED-düzeltilmiş Welch t-test")
-                st.json({k: v for k, v in t_res.items() if not isinstance(v, (list, np.ndarray))})
-
-    st.subheader("Çoklu Test Düzeltmesi")
-    raw = st.text_input("p-değerleri (virgüllü)", value="")
-    method = st.selectbox("Yöntem", ["bonferroni", "fdr_bh"])
-    if raw.strip():
-        try:
-            pvs = [float(x.strip()) for x in raw.split(",") if x.strip()]
-            res = multiple_testing_correction(pvs, method=method)
-            st.json(res)
-        except Exception as exc:
-            st.error(f"Parse hatası: {exc}")
-
-
-def page_segment() -> None:
-    st.header("Segment & Deep Dive Analiz")
-    tup = get_two_arms()
-    if tup is None:
-        return
-    ctrl, variant, sub = tup
-    seg_col = st.session_state.segment_col
-    if not seg_col:
-        st.info("Segment kolonu seçilmedi.")
-        return
-    metric_col = st.session_state.metric_col
-    rows = []
-    for seg, g in sub.groupby(seg_col, dropna=False):
-        c_arr = pd.to_numeric(g[g[st.session_state.variant_col].astype(str) == str(ctrl)][metric_col], errors="coerce").dropna()
-        v_arr = pd.to_numeric(g[g[st.session_state.variant_col].astype(str) == str(variant)][metric_col], errors="coerce").dropna()
-        if len(c_arr) < 5 or len(v_arr) < 5:
-            rows.append({"segment": seg, "n_control": len(c_arr), "n_variant": len(v_arr), "status": "yetersiz"})
-            continue
-        if st.session_state.metric_type == "Binary":
-            r = run_z_test(int(c_arr.sum()), int(len(c_arr)), int(v_arr.sum()), int(len(v_arr)), st.session_state.alpha)
-        else:
-            r = run_t_test(c_arr.to_numpy(), v_arr.to_numpy(), st.session_state.alpha, welch=True)
-        if "error" in r:
-            rows.append({"segment": seg, "status": r["error"]})
-            continue
-        rows.append(
-            {
-                "segment": seg,
-                "n_control": r.get("n_control"),
-                "n_variant": r.get("n_variant"),
-                "p_value": r.get("p_value"),
-                "uplift_rel": r.get("uplift_rel"),
-                "category": "Confirmed" if r.get("p_value", 1) < st.session_state.alpha else "Exploratory",
-            }
-        )
-    tbl = pd.DataFrame(rows)
-    st.session_state.segment_result = tbl
-    st.dataframe(tbl, use_container_width=True)
-
-    pvals = [r.get("p_value") for r in rows if isinstance(r.get("p_value"), float)]
-    if pvals:
-        corr = multiple_testing_correction(pvals, method="fdr_bh")
-        st.subheader("FDR (Benjamini-Hochberg) düzeltilmiş p-değerleri")
-        st.write(corr["adjusted"])
-
-
-def page_what_if() -> None:
-    st.header("What-If Simülasyonu")
-    st.caption("Senaryo bazlı sonuç tahminlemesi.")
-    if st.session_state.metric_type != "Binary":
-        st.info("Bu basit simülasyon binary metrikler içindir.")
-    baseline = st.number_input("Baseline conversion", min_value=0.0001, max_value=0.9999, value=float(st.session_state.baseline_rate), step=0.005, format="%.4f")
-    uplift = st.number_input("Uplift (mutlak)", value=0.01, step=0.005, format="%.4f")
-    n = st.number_input("Kol başına örneklem", min_value=100, value=10000, step=100)
-    res = what_if_binary(baseline, uplift, int(n), st.session_state.alpha)
-    if "error" in res:
-        st.error(res["error"])
-        return
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Beklenen p-değer", f"{res['p_value']:.4f}")
-    c2.metric("Relatif uplift", f"{res['uplift_rel']*100:.2f}%")
-    c3.metric("Güven aralığı", f"[{res['ci_low']:.4f}, {res['ci_high']:.4f}]")
-
-
-def page_anomaly() -> None:
-    st.header("Anomali-Aware İzleme")
-    if not require_mapping():
-        return
-    ts_col = st.session_state.timestamp_col
-    if not ts_col:
-        st.info("Timestamp kolonu eşleyin.")
-        return
-    df = st.session_state.df.copy()
-    df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
-    df = df.dropna(subset=[ts_col])
-    metric_col = st.session_state.metric_col
-    daily = (
-        df.groupby([pd.Grouper(key=ts_col, freq="D"), st.session_state.variant_col])[metric_col]
-        .mean()
-        .reset_index()
-    )
-    if daily.empty:
-        st.info("Veri yok.")
-        return
-    fig = px.line(daily, x=ts_col, y=metric_col, color=st.session_state.variant_col, markers=True)
+        labels = [control, variant]
+        values = [stat.get("mean_control", 0), stat.get("mean_variant", 0)]
+        fig = go.Figure(go.Bar(x=labels, y=values, text=[f"{v:.2f}" for v in values], textposition="outside"))
+        fig.update_layout(yaxis_title="Ortalama", margin=dict(l=10, r=10, t=10, b=10), height=300)
     st.plotly_chart(fig, use_container_width=True)
 
-    rows = []
-    for v, g in daily.groupby(st.session_state.variant_col):
-        vals = g[metric_col].to_numpy()
-        if len(vals) < 5:
-            continue
-        mu = np.mean(vals)
-        sd = np.std(vals, ddof=1)
-        if sd == 0:
-            continue
-        z = (vals - mu) / sd
-        for i, zi in enumerate(z):
-            if abs(zi) > 3:
-                rows.append({"variant": v, "date": g.iloc[i][ts_col], "value": float(vals[i]), "z": float(zi)})
-    st.session_state.anomaly_result = rows
-    if rows:
-        st.warning(f"{len(rows)} anomali noktası tespit edildi.")
-        st.dataframe(pd.DataFrame(rows), use_container_width=True)
-    else:
-        st.success("Belirgin anomali yok.")
 
-
-def page_decision() -> None:
-    st.header("Karar Motoru & Raporlama")
-    res = st.session_state.analysis_result
-    guard = st.session_state.guardrail_result
-    bayes = st.session_state.bayes_result
-    if not res:
-        st.info("Önce istatistiksel analizi çalıştırın.")
+def page3_results() -> None:
+    st.header("3. Sonuç")
+    result = st.session_state.full_result
+    if not result:
+        st.info("Önce analiz çalıştırın.")
+        if st.button("Geri"):
+            go_to(2)
         return
 
-    if st.session_state.metric_type == "Binary":
-        n_req = sample_size_binary(
-            st.session_state.baseline_rate,
-            st.session_state.mde,
-            st.session_state.alpha,
-            st.session_state.power,
-        )
-    else:
-        n_req = sample_size_continuous(
-            st.session_state.baseline_std,
-            st.session_state.mde,
-            st.session_state.alpha,
-            st.session_state.power,
-        )
+    st.caption(f"Hipotez: {st.session_state.hypothesis or '-'}")
 
-    n_actual = int(res.get("n_control", 0)) + int(res.get("n_variant", 0))
-    n_req_total = n_req * 2
-    dec = decision_engine(
-        p_value=res.get("p_value"),
-        uplift_abs=res.get("uplift_abs"),
-        uplift_rel=res.get("uplift_rel"),
-        alpha=st.session_state.alpha,
-        guardrail_violated=bool(guard["violated"]) if guard else False,
-        n_required=n_req_total,
-        n_actual=n_actual,
-        bayes_prob=(bayes or {}).get("prob_variant_better"),
-    )
-    st.session_state.decision_result = dec
+    tabs = st.tabs([f"Varyant: {a['variant']}" for a in result["analyses"]])
+    for tab, a in zip(tabs, result["analyses"]):
+        with tab:
+            if "error" in a:
+                st.error(a["error"])
+                continue
 
-    st.subheader("Karar")
-    st.success(dec["decision"])
-    for r in dec["reasons"]:
-        st.write(f"- {r}")
+            stat = a["stat"]
+            decision_card(a["decision"]["decision"])
 
-    summary = build_executive_summary(res, dec, st.session_state.hypothesis)
-    st.subheader("Executive Summary")
+            cols = st.columns(4)
+            if result["is_binary"]:
+                cols[0].metric(f"{result['control']} dönüşüm", f"%{stat['p_control']*100:.2f}")
+                cols[1].metric(f"{a['variant']} dönüşüm", f"%{stat['p_variant']*100:.2f}")
+                if not (isinstance(stat.get("uplift_rel"), float) and math.isnan(stat["uplift_rel"])):
+                    cols[2].metric("Relatif fark", f"{stat['uplift_rel']*100:+.2f}%")
+                cols[3].metric("Güven", confidence_label(stat["p_value"]))
+            else:
+                cols[0].metric(f"{result['control']} ortalama", f"{stat['mean_control']:.2f}")
+                cols[1].metric(f"{a['variant']} ortalama", f"{stat['mean_variant']:.2f}")
+                if not (isinstance(stat.get("uplift_rel"), float) and math.isnan(stat["uplift_rel"])):
+                    cols[2].metric("Relatif fark", f"{stat['uplift_rel']*100:+.2f}%")
+                cols[3].metric("Güven", confidence_label(stat["p_value"]))
+
+            sample_pct = min(100, int(a["n_actual"] / max(a["n_required"], 1) * 100))
+            st.progress(sample_pct / 100, text=f"Örneklem doluluğu: {a['n_actual']:,} / {a['n_required']:,} (%{sample_pct})")
+
+            plot_comparison(stat, result["is_binary"], result["control"], a["variant"])
+
+            st.markdown("**Ne yapmalıyım?**")
+            for r in a["decision"]["reasons"]:
+                st.markdown(f"- {r}")
+
+            with st.expander("Veri kalitesi kontrolleri"):
+                q = result["quality"]
+                srm = q.get("srm", {})
+                c1, c2, c3, c4 = st.columns(4)
+                if "srm_detected" in srm:
+                    c1.metric("SRM", "Sorun var" if srm["srm_detected"] else "Temiz", help=f"p={srm.get('p_value',0):.4f}")
+                c2.metric("Duplicate", f"{q.get('duplicates', 0):,}")
+                c3.metric("Eksik metric", f"{q.get('missing_metric', 0):,}")
+                c4.metric("Aykırı değer", f"{q.get('outliers', 0):,}")
+
+            with st.expander("Yan metrikler (guardrail)"):
+                rows = a["guardrail"]["rows"]
+                if not rows:
+                    st.info("Veride otomatik yakalanan guardrail metriği yok.")
+                else:
+                    df_g = pd.DataFrame(rows)
+                    df_g["relative_change"] = df_g["relative_change"].map(lambda x: f"{x*100:+.2f}%")
+                    st.dataframe(df_g, use_container_width=True)
+                    if a["guardrail"]["violated"]:
+                        st.warning("En az bir guardrail metriğinde olumsuz yön tespit edildi.")
+                    else:
+                        st.success("Guardrail metriklerinde olumsuz sinyal yok.")
+
+            with st.expander("Segment bazında performans"):
+                if not a.get("segments"):
+                    st.info("Segment kolonu seçilmedi veya yeterli veri yok.")
+                else:
+                    df_s = pd.DataFrame(a["segments"]).copy()
+                    if "uplift_rel" in df_s:
+                        df_s["uplift_rel"] = df_s["uplift_rel"].map(
+                            lambda x: f"{x*100:+.2f}%" if isinstance(x, (int, float)) and not math.isnan(x) else "-"
+                        )
+                    st.dataframe(df_s, use_container_width=True)
+
+            with st.expander("Varyans azaltma (CUPED)"):
+                if not a.get("cuped"):
+                    st.info("Önceki dönem metriği sağlanmadığı için CUPED çalıştırılmadı.")
+                else:
+                    st.metric("Varyans azaltımı", f"%{a['cuped']['variance_reduction_pct']:.1f}")
+                    st.caption("CUPED ile test daha az örneklemle aynı hassasiyeti yakalar.")
+
+            with st.expander("Bayesian olasılık"):
+                b = a["bayes"]
+                bc1, bc2 = st.columns(2)
+                bc1.metric("Varyant daha iyi olma olasılığı", f"%{b['prob_variant_better']*100:.1f}")
+                bc2.metric("Beklenen kayıp", f"{b['expected_loss_variant']:.4f}")
+
+            with st.expander("Teknik istatistik detayları"):
+                techs = {k: v for k, v in stat.items() if not isinstance(v, (list, np.ndarray))}
+                st.json(techs)
+
+    if result.get("trend") is not None:
+        with st.expander("Zaman içinde metrik değişimi"):
+            plot_trend(result["trend"], result["variant_col"], result["metric_col"])
+
+    st.divider()
+    st.subheader("Rapor")
+    summary = build_summary_text(st.session_state.hypothesis, result)
     st.code(summary)
 
-    st.subheader("LLM Açıklaması (Streamlit Cloud Secrets)")
-    if st.button("LLM ile doğal dilde açıklama üret"):
-        with st.spinner("Üretiliyor..."):
-            explanation = llm_explain(summary)
-        if explanation is None:
-            st.warning(
-                "LLM istemcisi bulunamadı. Streamlit Cloud Settings > Secrets altında "
-                "LLM_API_KEY, LLM_BASE_URL ve LLM_MODEL değerlerini ekleyin."
-            )
-        else:
-            st.markdown(explanation)
-
-    st.subheader("Export")
-    seg_df = st.session_state.segment_result if isinstance(st.session_state.segment_result, pd.DataFrame) else None
-    excel_bytes = export_excel(
-        st.session_state.hypothesis,
-        res,
-        dec,
-        st.session_state.validation_report,
-        bayes,
-        seg_df,
-    )
-    st.download_button("Excel indir", data=excel_bytes, file_name="ab_test_report.xlsx")
-
-    payload = {
-        "hypothesis": st.session_state.hypothesis,
-        "metric_type": st.session_state.metric_type,
-        "alpha": st.session_state.alpha,
-        "power": st.session_state.power,
-        "result": res,
-        "decision": dec,
-        "validation": st.session_state.validation_report,
-        "bayesian": bayes,
-        "guardrail": guard,
-        "sequential": st.session_state.sequential_result,
-        "cuped": {k: v for k, v in (st.session_state.cuped_result or {}).items() if k != "adjusted"} if st.session_state.cuped_result else None,
-        "timestamp": datetime.now().isoformat(timespec="seconds"),
-    }
-    st.download_button("JSON indir", data=export_json(payload), file_name="ab_test_report.json")
-
-    if st.button("Bilgi bankasına kaydet"):
-        st.session_state.history.append(
-            {
-                "saved_at": datetime.now().isoformat(timespec="seconds"),
-                "hypothesis": st.session_state.hypothesis,
-                "metric_type": st.session_state.metric_type,
-                "decision": dec["decision"],
-                "p_value": res.get("p_value"),
-                "uplift_rel": res.get("uplift_rel"),
-                "file": st.session_state.file_name,
-            }
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    with cc1:
+        st.download_button(
+            "Excel indir",
+            data=export_excel(st.session_state.hypothesis, result),
+            file_name="ab_test_report.xlsx",
+            use_container_width=True,
         )
-        st.success("Kaydedildi.")
+    with cc2:
+        payload = {
+            "hypothesis": st.session_state.hypothesis,
+            "metric_kind": result.get("metric_kind"),
+            "alpha": result.get("alpha"),
+            "power": result.get("power"),
+            "analyses": [
+                {**{k: v for k, v in a.items() if k != "stat"}, "stat": {k: v for k, v in a.get("stat", {}).items() if not isinstance(v, (list, np.ndarray))}}
+                for a in result.get("analyses", [])
+            ],
+            "quality": result.get("quality"),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+        st.download_button(
+            "JSON indir",
+            data=export_json(payload),
+            file_name="ab_test_report.json",
+            use_container_width=True,
+        )
+    with cc3:
+        if st.button("Bilgi bankasına kaydet", use_container_width=True):
+            for a in result.get("analyses", []):
+                if "error" in a:
+                    continue
+                st.session_state.history.append({
+                    "saved_at": datetime.now().isoformat(timespec="seconds"),
+                    "hypothesis": st.session_state.hypothesis,
+                    "metric_kind": result.get("metric_kind"),
+                    "variant": a["variant"],
+                    "decision": a["decision"]["decision"],
+                    "uplift_rel": a["stat"].get("uplift_rel"),
+                    "p_value": a["stat"].get("p_value"),
+                    "file": st.session_state.file_name,
+                })
+            st.success("Kaydedildi.")
+    with cc4:
+        if st.button("Yöneticiye özet (LLM)", use_container_width=True):
+            with st.spinner("Hazırlanıyor..."):
+                text = llm_explain(summary)
+            if text is None:
+                st.info(
+                    "LLM yapılandırılmamış. Streamlit Cloud → Settings → Secrets altında "
+                    "LLM_API_KEY, LLM_BASE_URL ve LLM_MODEL tanımlayın."
+                )
+            else:
+                st.markdown(text)
 
+    if st.session_state.history:
+        with st.expander(f"Geçmiş deneyler ({len(st.session_state.history)})"):
+            st.dataframe(pd.DataFrame(st.session_state.history), use_container_width=True)
 
-def page_history() -> None:
-    st.header("Deney Bilgi Bankası")
-    hist = st.session_state.history
-    if not hist:
-        st.info("Henüz kaydedilmiş deney yok.")
-        return
-    st.dataframe(pd.DataFrame(hist), use_container_width=True)
-    st.caption("Not: Bu bilgi bankası oturum bazlıdır. Kalıcı saklama için dış veritabanı entegre edin.")
-
-
-PAGES = {
-    "1. Deney Tasarımı": page_experiment_setup,
-    "2. Veri Yükleme & Eşleme": page_upload,
-    "3. Veri Validasyonu": page_validation,
-    "4. İstatistiksel Analiz": page_statistical_analysis,
-    "5. Guardrail İzleme": page_guardrail,
-    "6. Bayesian Analiz": page_bayesian,
-    "7. Sequential / Peeking": page_sequential,
-    "8. CUPED & Düzeltmeler": page_cuped_correction,
-    "9. Segment Analizi": page_segment,
-    "10. What-If Simülasyonu": page_what_if,
-    "11. Anomali İzleme": page_anomaly,
-    "12. Karar & Rapor": page_decision,
-    "13. Deney Bilgi Bankası": page_history,
-}
+    st.divider()
+    cb1, cb2 = st.columns([1, 4])
+    with cb1:
+        if st.button("Yeni deney", use_container_width=True):
+            reset_all()
 
 
 def main() -> None:
-    choice = sidebar_nav()
+    sidebar()
     st.title("A/B Testing Agent")
-    st.caption(
-        "Deney tasarımından karar önerisine, uçtan uca standartlaştırılmış A/B test akışı."
-    )
-    st.warning(
-        "Bu uygulama bir analiz ve karar destek aracıdır. Üretilen sonuçlar iş kararlarını "
-        "destekler niteliktedir; veri kalitesi, dış faktörler ve alan uzmanlığı ile birlikte "
-        "değerlendirilmelidir."
-    )
-    PAGES[choice]()
+    st.caption("Teknik detaylara boğulmadan, üç adımda A/B test analizi ve karar.")
+    step = st.session_state.step
+    if step == 1:
+        page1_setup()
+    elif step == 2:
+        page2_data()
+    else:
+        page3_results()
 
 
 main()

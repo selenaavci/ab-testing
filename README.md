@@ -1,241 +1,154 @@
 🧪 A/B Testing Agent
 
 📌 Overview
-A/B Testing Agent, kullanıcıların deney tasarımı, veri doğrulama, istatistiksel analiz ve karar üretim süreçlerini tek bir platform üzerinden yönetmesini sağlayan uçtan uca bir deney yönetim aracıdır.
-Bu agent, teknik bilgisi sınırlı kullanıcıların dahi güvenilir A/B testleri kurgulamasını, analiz etmesini ve sonuçları iş kararlarına dönüştürmesini mümkün kılar.
-Agent; deney kurulumundan veri validasyonuna, istatistiksel analizden aksiyon önerilerine kadar tüm süreci otomatikleştirir ve standartlaştırır.
+A/B Testing Agent, marketing, product ve growth ekiplerinin istatistik uzmanı olmadan A/B test tasarlayabileceği, veri yükleyip saniyeler içinde net bir "yayına al / alma / devam et" kararı alabileceği bir deney yönetim aracıdır.
+Tüm istatistiksel analizler, validasyonlar ve karar gerekçeleri arka planda otomatik çalışır; kullanıcı yalnızca üç adımda ilerler:
+
+1. Deneyimi tanımla (ne test ediyorsun, başarıyı nasıl ölçüyorsun)
+2. Veriyi yükle (kolonlar otomatik algılanır)
+3. Sonucu gör (tek karar kartı + isteğe bağlı teknik detaylar)
 
 🎯 Project Purpose
 Kurum içinde deney kültürünü yaygınlaştırmak
 Business ekiplerin teknik destek almadan A/B test yapabilmesini sağlamak
 Yanlış test kurgularını ve hatalı yorumlamaları engellemek
 Karar alma süreçlerini hızlandırmak ve veri odaklı hale getirmek
+Teknik bilgisi sınırlı kullanıcılarda da güven seviyesini yüksek tutmak
 
 👥 Target Users
 Marketing & Growth Teams
 Product Managers
 Digital Analytics Teams
 CRM & Campaign Teams
-Data Analysts
+Data Analysts (detay istediklerinde Advanced expander'ları üzerinden)
 
-⚙️ Core Capabilities
-1. Experiment Setup & Design
-Hipotez tanımlama
-Kontrol ve varyant gruplarının belirlenmesi
-Primary metric ve guardrail metric seçimi
-Trafik dağılımı tanımı (A/B/C vs.)
-Confidence level ve power ayarları
-Minimum Detectable Effect (MDE) belirleme
-Otomatik sample size hesaplama
+🧭 User Experience — 3 adımlı sihirbaz
 
-2. Data Upload & Integration
-CSV / XLSX veri yükleme
-Kolon eşleme (variant, metric, timestamp vb.)
-Veri önizleme
-Multi-series ve multi-experiment desteği
-Batch experiment analizi
+1. Deneyim
+- Hipotez (serbest metin)
+- "Başarıyı nasıl ölçüyorsun?" → Dönüşüm / Evet-Hayır ya da Gelir / Süre / Sayısal değer
+- "En az ne kadarlık bir iyileşme anlamlı?" slider'ı (MDE yerine günlük dil)
+- Gelişmiş ayarlar expander'ı: güven seviyesi (%90/95/99) ve güç (power)
 
-3. Data Validation & Quality Checks
-Agent, test sonuçlarının güvenilirliğini sağlamak için otomatik veri kontrolleri yapar:
-Sample Ratio Mismatch (SRM) detection
-Duplicate kayıt kontrolü
-Missing data analizi
-Randomization kontrolü
-Outlier detection (IQR tabanlı)
-Metric sanity checks
-Data type validation
+2. Veri
+- Tek tıkla CSV/XLSX yükleme
+- Varyant, metric, zaman, segment ve önceki dönem kolonları otomatik algılanır
+- "Manuel ayarla" expander'ı ile elle düzeltme
+- Veri önizleme
 
-4. Statistical Analysis Engine
-Agent, metrik tipine göre doğru istatistiksel yöntemi otomatik seçer:
-Supported Metrics:
-Binary metrics (conversion, click)
-Continuous metrics (revenue, duration)
-Count metrics
-Rate metrics
-Retention metrics
-Supported Methods:
-z-test / chi-square
-t-test / Welch’s test
-Non-parametric tests (Mann-Whitney U)
-Bayesian A/B testing
-Output:
-p-value
-confidence interval
-uplift (% ve absolute)
-effect size (Cohen's d)
+3. Sonuç
+- Renkli karar kartı:
+  * Varyant kazandı. Yayına alınabilir.
+  * Varyant yayına alınmamalı.
+  * Kesin karar için teste devam edilmeli.
+  * Kontrol ile varyant arasında anlamlı fark yok.
+  * Testi yeniden kurgulayın.
+- Kontrol / varyant rakamları + relatif fark + "Güven: Yüksek/Yeterli/Düşük"
+- Örneklem doluluk çubuğu (mevcut / hedef)
+- Karar gerekçeleri (tek cümlelik açıklamalar)
+- Karşılaştırma grafiği ve (varsa) zamansal trend
+- İsteğe bağlı Detaylı expander'lar:
+  * Veri kalitesi (SRM, duplicate, missing, outlier)
+  * Yan metrikler (guardrail)
+  * Segment bazında performans + FDR düzeltmesi
+  * CUPED varyans azaltma
+  * Bayesian olasılık ve beklenen kayıp
+  * Teknik istatistik detayları (p, CI, z/t, method)
 
-5. Guardrail Monitoring
-Primary metric dışında yan etkileri izlemek için:
-churn rate
-refund rate
-bounce rate
-error rate
-unsubscribe rate
-revenue impact
-Agent, şu tarz uyarılar üretir:
-Primary metric improved, but guardrail metrics show negative impact.
-
-6. Sequential Testing & Smart Monitoring
-Peeking-safe sequential analysis (O’Brien-Fleming tarzı alpha spending)
-Test devam ederken güvenli yorumlama
-Automatic early stopping önerileri
-Dynamic confidence tracking
-
-7. Bayesian Experimentation
-Posterior probability hesaplama
-Probability of B being better than A
-Expected loss (risk) hesabı
-Risk-based decision support
-Uncertainty-aware recommendations
-
-8. Advanced Experimentation Features
-Multi-Armed Bandit Support (roadmap)
-Trafik dinamik olarak en iyi varyanta yönlendirilir
-Exploration vs exploitation dengesi
-CUPED (Variance Reduction)
-Daha hızlı ve daha hassas sonuçlar
-Daha düşük sample size ihtiyacı
-Multiple Testing Correction
-False positive riskini azaltma
-Bonferroni / FDR (Benjamini-Hochberg) düzeltmeleri
-
-9. Segment & Deep Dive Analysis
-Device bazlı analiz
-Country / region kırılımı
-User segment analizi
-New vs returning users
-Channel bazlı performans
-Agent, segment sonuçlarını:
-Exploratory insight
-Confirmed result
-olarak ayırır.
-
-10. Anomaly-Aware Experiment Monitoring
-Test süresince anomali tespiti (z-skoru tabanlı)
-Ani metrik değişimlerinin yakalanması
-Data drift ve davranış değişikliklerinin analizi
-
-11. What-If Simulation
-“Conversion %3 artarsa ne olur?”
-“Traffic %20 artarsa sonuç nasıl değişir?”
-Senaryo bazlı tahminleme
-
-12. Decision Engine
-Agent, analiz sonuçlarını aksiyona dönüştürür:
-✅ Ship Winner
-⏳ Continue Test
-⚖️ No Significant Difference
-❌ Do Not Launch
-🔁 Re-run Experiment
-Karar önerileri:
-istatistiksel güven
-iş etkisi
-veri yeterliliği
-baz alınarak üretilir.
-
-13. Explainable AI Layer (LLM Support)
-Sonuçların doğal dilde açıklanması
-Executive summary üretimi
-Teknik detayların sadeleştirilmesi
-“Bu test neden böyle sonuç verdi?” açıklamaları
-İki katman:
-- Rule-based offline açıklayıcı (daima çalışır)
-- LLM tabanlı açıklayıcı (secrets üzerinden yapılandırılır)
-
-14. Experiment Knowledge Base
-Geçmiş testlerin oturum içinde saklanması
-Benzer deneylerin önerilmesi
-Öğrenen sistem yapısı
-Test başarı / başarısızlık pattern analizi
+⚙️ Core Capabilities (arka planda çalışır)
+- Experiment Setup & Design
+  * Hipotez, metric, MDE, trafik dağılımı
+  * Otomatik sample size hesaplama
+- Data Upload & Integration
+  * CSV / XLSX + otomatik kolon algılama
+- Data Validation & Quality Checks
+  * Sample Ratio Mismatch (SRM)
+  * Duplicate, missing, outlier (IQR), veri tipi doğrulama
+- Statistical Analysis Engine
+  * Metric tipine göre otomatik yöntem (z-test, Welch t-test)
+  * p-value, güven aralığı, uplift, effect size
+- Guardrail Monitoring
+  * Bounce, error, refund, churn, unsubscribe gibi kolonlar otomatik yakalanır
+- Bayesian Experimentation
+  * Posterior probability, expected loss, %95 HDI
+- Advanced Experimentation
+  * CUPED (variance reduction)
+  * Multiple testing correction (FDR / Bonferroni)
+- Segment & Deep Dive
+  * Segment bazında uplift + "Confirmed / Exploratory" etiketleri
+- Anomaly-Aware Monitoring
+  * Zamansal trend grafiği ve sapma izleme
+- Decision Engine
+  * Ship Winner / Do Not Launch / Continue Test / No Significant Difference / Re-run
+- Explainable AI Layer
+  * Rule-based yönetici özeti (daima çalışır)
+  * LLM tabanlı açıklama (secrets üzerinden yapılandırılır)
+- Experiment Knowledge Base
+  * Oturum içi deney kaydı ve karşılaştırma
 
 📊 Output & Reporting
-1. Executive Summary
-Kazanan varyant
-Güven seviyesi
-İş etkisi
-Önerilen aksiyon
-2. Analytical Report
-p-value
-confidence interval
-uplift
-segment sonuçları
-3. Technical Validation Log
-SRM sonucu
-kullanılan test yöntemi
-veri temizleme adımları
-varsayım kontrolleri
+- Sonuç kartı (tek bakışta karar + neden)
+- Yönetici özeti (rule-based, offline çalışır)
+- Teknik özet (p-değer, CI, uplift, örneklem vs.)
+- Excel raporu (özet, sonuçlar, guardrail, segment, veri kalitesi sheet'leri)
+- JSON raporu (API entegrasyonu)
 
-📤 Export Options
-Excel (detaylı sonuçlar, çok sekmeli rapor)
-JSON (API entegrasyonu)
-Dashboard çıktıları (uygulama içi canlı görünüm)
-PDF export (roadmap)
+🗂️ Sürümler / Deployment
 
-🧩 System Architecture 
-Experiment Setup
-Data Ingestion
-Validation Engine
-Statistical Engine
-Decision Engine
-Reporting & Export
+Proje iki farklı ortam için paralel olarak paketlenmiştir. Arka plandaki analiz motoru ve UX akışı iki sürümde de aynıdır.
+
+1. Streamlit Cloud (ab-testing/streamlit_app.py)
+- Bağımlılıklar: ab-testing/requirements.txt (streamlit>=1.32, pandas, numpy, scipy, plotly, openpyxl, openai>=1.40)
+- LLM: Streamlit Cloud → Settings → Secrets altında
+  * LLM_API_KEY
+  * LLM_BASE_URL (isteğe bağlı; internal endpoint için)
+  * LLM_MODEL
+- Secrets yoksa yönetici açıklaması rule-based olarak üretilir, LLM butonu bilgilendirme verir.
+- Örnek dosya: ab-testing/.streamlit/secrets.toml.example
+
+2. RDP / Offline Windows Terminal (ab-testing/ab-test/app.py)
+- Bağımlılıklar: ab-testing/ab-test/requirements.txt
+  * streamlit==1.26.0
+  * pandas==2.0.3, numpy==1.24.4, scipy==1.11.4
+  * plotly==5.17.0, altair==4.2.2, protobuf==4.24.4
+  * openpyxl==3.1.2
+  * openai==1.2.2
+- Çalıştırma: ab-test/run.bat dosyasına çift tıklanır, sanal ortam kurulur ve uygulama http://localhost:8501 üzerinde açılır.
+- İnternet erişimi gerekmez; rule-based yönetici özeti hazır gelir.
+- İç network LLM endpoint'i varsa ab-test/.streamlit/secrets.toml'da LLM_API_KEY + LLM_BASE_URL + LLM_MODEL tanımlanır; openai==1.2.2 istemcisi iç endpoint'e bağlanır.
+
+🧪 Örnek Test Verileri
+ab-testing/test-data altında hazır CSV dosyaları bulunur:
+- test_binary_conversion.csv (1.200 satır) — dönüşüm metriği + guardrail + segment
+- test_continuous_revenue.csv (1.400 satır) — revenue + pre_revenue (CUPED) + segment + timestamp
+- test_multi_variant.csv (1.500 satır) — 3 kol (A/B/C) binary click-through
+- test_srm_issue.csv (1.400 satır) — kasıtlı trafik dengesizliği, SRM kontrolünün tetiklenmesini test eder
+
+🔐 Configuration Notes
+- secrets.toml.example dosyaları örnek olarak paylaşılmıştır; gerçek değerler asla versiyon kontrolüne eklenmemelidir.
+- RDP sürümünde paket kurulumu için iç PyPI aynasına ihtiyaç olabilir.
+- Varsayılan değerler (alpha=%5, power=%80) çoğu test için uygundur; Gelişmiş ayarlar expander'ı üzerinden değiştirilebilir.
 
 🚀 Business Impact
 Deney süreçlerini standartlaştırır
 Yanlış karar riskini azaltır
-Analiz süresini ciddi ölçüde kısaltır
-Teknik bağımlılığı azaltır
-Daha hızlı ve güvenilir ürün geliştirme sağlar
+Teknik olmayan kullanıcıları analiz dokümanı okumaktan kurtarır
+Analiz süresini saniyelere indirir
+Veri ekibinin destek yükünü hafifletir
 
 💡 Example Use Case
 Bir marketing ekibi yeni bir kampanya varyantını test etmek ister:
-Kullanıcı hipotezi tanımlar
-Veri yüklenir
-Agent otomatik analiz yapar
-Sonuçları yorumlar
-“B varyantı %6 uplift ile kazandı, rollout önerilir” çıktısını verir
+- Adım 1'de hipotezi yazar, "dönüşüm" seçer ve %2 iyileşme duyarlılığı belirler.
+- Adım 2'de CSV yükler; kolonlar otomatik algılanır.
+- Adım 3'te "Varyant kazandı, yayına alınabilir" kartını görür, yanında:
+  * Dönüşüm %10.5 → %12.1 (+15.3%)
+  * Güven: Yeterli (%95)
+  * Guardrail: Olumsuz sinyal yok
+  * Yönetici özeti tek tık ile kopyalanır.
 
 🧠 Key Differentiators
-End-to-end experimentation flow
-Built-in validation (SRM, data quality)
-Advanced statistical methods (Bayesian, CUPED)
-Decision-oriented outputs
-Non-technical user friendly design
-Explainable results (rule-based + LLM)
-
-🗂️ Sürümler / Deployment
-
-Proje iki farklı ortam için paralel olarak paketlenmiştir:
-
-1. Streamlit Cloud (streamlit_app.py)
-- Dosya: ab-testing/streamlit_app.py
-- Bağımlılıklar: ab-testing/requirements.txt (streamlit>=1.32, pandas, numpy, scipy, plotly, openpyxl, openai>=1.40)
-- LLM entegrasyonu: Streamlit Cloud "Settings → Secrets" altında aşağıdaki anahtarlar tanımlanır:
-  - LLM_API_KEY
-  - LLM_BASE_URL
-  - LLM_MODEL
-- Secrets tanımlı değilse uygulama çalışmaya devam eder, yalnızca LLM açıklama adımı devre dışı kalır.
-- Örnek için ab-testing/.streamlit/secrets.toml.example bakılabilir.
-
-2. RDP / Offline Windows Terminal (ab-test/app.py)
-- Dosya: ab-testing/ab-test/app.py
-- Bağımlılıklar: ab-testing/ab-test/requirements.txt
-  - streamlit==1.26.0
-  - pandas==2.0.3, numpy==1.24.4, scipy==1.11.4
-  - plotly==5.17.0, altair==4.2.2, protobuf==4.24.4
-  - openpyxl==3.1.2
-  - openai==1.2.2
-- Kurulum / çalıştırma: ab-test klasöründeki run.bat dosyasına çift tıklanır. Sanal ortam
-  oluşturulur, requirements.txt kurulumu yapılır ve uygulama http://localhost:8501 üzerinde
-  başlatılır.
-- İnternet bağlantısı gerektirmez. Varsayılan olarak rule-based offline açıklama çalışır.
-- Kurum içi bir LLM endpoint'i mevcutsa ab-test/.streamlit/secrets.toml dosyasına
-  LLM_API_KEY, LLM_BASE_URL ve LLM_MODEL yazıldığında openai 1.2.2 istemcisi ile
-  iç network üzerinden açıklama üretilebilir.
-
-🔐 Configuration Notes
-- secrets.toml.example dosyaları örnek olarak paylaşılmıştır; gerçek değerler asla
-  versiyon kontrolüne eklenmemelidir.
-- RDP sürümünde paket kurulumu için iç PyPI aynasına ihtiyaç olabilir; organizasyonun
-  sunduğu indeksi kullanmak gerekir.
-- Sample size ve sequential testing hesaplamaları alpha / power / MDE ayarlarına duyarlıdır;
-  deney tasarımı ekranında bu parametreler girilmelidir.
+Üç adımlı sade sihirbaz (13 ekran yerine 3)
+Karar odaklı sonuç kartı + istenirse teknik derinlik
+Otomatik kolon algılama ve otomatik guardrail yakalama
+Rule-based + LLM açıklayıcı
+Aynı analiz motoru hem Streamlit Cloud hem offline RDP ortamında
