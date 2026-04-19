@@ -719,9 +719,9 @@ def sidebar() -> None:
     steps = [(1, "Deneyim"), (2, "Veri"), (3, "Sonuç")]
     for i, label in steps:
         if i == current:
-            st.sidebar.markdown(f"**{i}. {label} — şu an**")
+            st.sidebar.markdown(f"**{i}. {label} — Bu aşamadasınız**")
         elif i < current:
-            st.sidebar.markdown(f"{i}. {label} (tamamlandı)")
+            st.sidebar.markdown(f"{i}. {label} (Tamamlandı)")
         else:
             st.sidebar.markdown(f"{i}. {label}")
     st.sidebar.divider()
@@ -737,7 +737,7 @@ def sidebar() -> None:
 
 def page1_setup() -> None:
     st.header("1. Deneyim hakkında")
-    st.caption("Neyi test ettiğinizi ve nasıl ölçtüğünüzü bize söyleyin. Teknik bilgi gerekmez.")
+    st.caption("Neyi test ettiğinizi ve nasıl ölçtüğünüzü bize söyleyin.")
 
     st.session_state.hypothesis = st.text_area(
         "Ne test ediyorsunuz?",
@@ -1074,7 +1074,7 @@ def page3_results() -> None:
                 })
             st.success("Kaydedildi.")
     with cc4:
-        if st.button("Yöneticiye özet (LLM)", use_container_width=True):
+        if st.button("Yapay Zeka Yorumu", use_container_width=True):
             with st.spinner("Hazırlanıyor..."):
                 text = llm_explain(summary)
             if text is None:
