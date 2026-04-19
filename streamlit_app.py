@@ -714,7 +714,7 @@ def reset_all() -> None:
 
 def sidebar() -> None:
     st.sidebar.title("A/B Testing Agent")
-    st.sidebar.caption("3 adımda kolay A/B test")
+    st.sidebar.caption("Aşağıda listenen 3 adımda kolay A/B test yapabilirsiniz. ")
     current = st.session_state.step
     steps = [(1, "Deneyim"), (2, "Veri"), (3, "Sonuç")]
     for i, label in steps:
@@ -725,9 +725,9 @@ def sidebar() -> None:
         else:
             st.sidebar.markdown(f"{i}. {label}")
     st.sidebar.divider()
-    if st.sidebar.button("Yeni deney başlat", use_container_width=True):
+    if st.sidebar.button("Yeni Deney Başlat", use_container_width=True):
         reset_all()
-    with st.sidebar.expander("Yardım"):
+    with st.sidebar.expander("Nasıl kullanılır?"):
         st.markdown(
             "1. **Deneyim**: Neyi test ettiğinizi ve başarıyı nasıl ölçtüğünüzü söyleyin.\n"
             "2. **Veri**: CSV/XLSX dosyanızı yükleyin; kolon eşlemesini sistem otomatik yapar.\n"
@@ -736,7 +736,7 @@ def sidebar() -> None:
 
 
 def page1_setup() -> None:
-    st.header("1. Deneyim hakkında")
+    st.header("1. Deneyim Hakkında")
     st.caption("Neyi test ettiğinizi ve nasıl ölçtüğünüzü bize söyleyin.")
 
     st.session_state.hypothesis = st.text_area(
@@ -791,7 +791,7 @@ def page1_setup() -> None:
 
     c1, c2 = st.columns([1, 4])
     with c1:
-        if st.button("Devam et", type="primary", use_container_width=True):
+        if st.button("Devam Et", type="primary", use_container_width=True):
             go_to(2)
 
 
@@ -799,7 +799,7 @@ def page2_data() -> None:
     st.header("2. Veri")
     st.caption("CSV veya XLSX dosyanızı yükleyin. Kolonları sizin için otomatik eşleyeceğiz.")
 
-    uploaded = st.file_uploader("Dosya seç", type=["csv", "xlsx", "xls"])
+    uploaded = st.file_uploader("Dosya Seç", type=["csv", "xlsx", "xls"])
     if uploaded is not None:
         df = load_dataframe(uploaded)
         if df is None:
@@ -827,7 +827,7 @@ def page2_data() -> None:
     auto = st.session_state.auto_mapping or {}
     mapping = st.session_state.mapping or {}
 
-    st.subheader("Otomatik algılanan kolonlar")
+    st.subheader("Otomatik Algılanan Kolonlar")
     auto_summary = {
         "Varyant (grup)": mapping.get("variant") or "(bulunamadı)",
         "Başarı metriği": mapping.get("metric") or "(bulunamadı)",
@@ -838,7 +838,7 @@ def page2_data() -> None:
     for k, v in auto_summary.items():
         st.markdown(f"- **{k}**: {v}")
 
-    with st.expander("Manuel ayarla"):
+    with st.expander("Manuel Ayarla"):
         cols = list(df.columns)
         none_opts = ["(yok)"] + cols
         def _idx(val: Optional[str], opts: List[str]) -> int:
@@ -864,7 +864,7 @@ def page2_data() -> None:
         if st.button("Geri", use_container_width=True):
             go_to(1)
     with c2:
-        if st.button("Analizi başlat", type="primary", disabled=not ready, use_container_width=True):
+        if st.button("Analizi Başlat", type="primary", disabled=not ready, use_container_width=True):
             with st.spinner("Analiz çalışıyor..."):
                 try:
                     result = run_full_analysis(
@@ -1033,7 +1033,7 @@ def page3_results() -> None:
     cc1, cc2, cc3, cc4 = st.columns(4)
     with cc1:
         st.download_button(
-            "Excel indir",
+            "Excel İndir",
             data=export_excel(st.session_state.hypothesis, result),
             file_name="ab_test_report.xlsx",
             use_container_width=True,
@@ -1052,7 +1052,7 @@ def page3_results() -> None:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
         }
         st.download_button(
-            "JSON indir",
+            "JSON İndir",
             data=export_json(payload),
             file_name="ab_test_report.json",
             use_container_width=True,
@@ -1092,7 +1092,7 @@ def page3_results() -> None:
     st.divider()
     cb1, cb2 = st.columns([1, 4])
     with cb1:
-        if st.button("Yeni deney", use_container_width=True):
+        if st.button("Yeni Deney", use_container_width=True):
             reset_all()
 
 
